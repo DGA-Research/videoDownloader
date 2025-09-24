@@ -1,5 +1,5 @@
 """
-Minimal video downloader using yt-dlp.
+Minimal video downloader for sites supported by yt-dlp.
 """
 import logging
 import shutil
