@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
 st.title("Video Downloader")
-st.write("Download a single video with yt-dlp. Provide a link and choose where to save it.")
+st.write("Download a single video from any yt-dlp-supported site. Provide a link and choose where to save it.")
 
 if FFMPEG_AVAILABLE and FFMPEG_PATH:
     st.caption(f"ffmpeg available at {FFMPEG_PATH}")
