@@ -73,8 +73,27 @@ if submitted:
 
         log_output = log_buffer.getvalue().strip()
         if result:
-            st.success(f"Saved to {result}")
+            result_path = Path(result)
+            st.success(f"Saved to {result_path}")
             st.caption("The file path above is relative to where Streamlit is running.")
+
+            file_bytes = result_path.read_bytes() if result_path.exists() else None
+            if file_bytes:
+                suffix = result_path.suffix.lower()
+                mime = {
+                    ".mp4": "video/mp4",
+                    ".mkv": "video/x-matroska",
+                    ".webm": "video/webm",
+                    ".mov": "video/quicktime",
+                }.get(suffix, "application/octet-stream")
+                st.download_button(
+                    "Download video",
+                    data=file_bytes,
+                    file_name=result_path.name,
+                    mime=mime,
+                )
+            else:
+                st.warning("Downloaded file could not be read for download.")
         else:
             st.error("Download failed. Check the logs for more details.")
 
