@@ -6,13 +6,21 @@ from pathlib import Path
 
 import streamlit as st
 
-from video_downloader import download_video
+from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, download_video
 
 logging.basicConfig(level=logging.INFO)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
 st.title("Video Downloader")
 st.write("Download a single video with yt-dlp. Provide a link and choose where to save it.")
+
+if FFMPEG_AVAILABLE and FFMPEG_PATH:
+    st.caption(f"ffmpeg available at {FFMPEG_PATH}")
+elif not FFMPEG_AVAILABLE:
+    st.info(
+        "ffmpeg is not available on this system. Downloads will fall back to the best single file. "
+        "Install ffmpeg to enable merging separate video and audio streams."
+    )
 
 with st.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
