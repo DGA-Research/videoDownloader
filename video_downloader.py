@@ -49,9 +49,7 @@ FFMPEG_PATH, FFMPEG_AVAILABLE = _locate_ffmpeg()
 def _ffmpeg_location_arg() -> Optional[str]:
     if not FFMPEG_PATH:
         return None
-    if FFMPEG_PATH.is_dir():
-        return str(FFMPEG_PATH)
-    return str(FFMPEG_PATH.parent)
+    return str(FFMPEG_PATH)
 
 
 def configure_logging(level: str = "INFO") -> None:
@@ -118,7 +116,13 @@ def download_video(url: str, output_dir: Path, filename: Optional[str] = None) -
             LOGGER.info("Downloaded %s -> %s", url, file_path)
             return file_path
     except yt_dlp.utils.DownloadError as err:
-        LOGGER.error("Video download failed for %s: %s", url, err)
+        message = str(err)
+        LOGGER.error("Video download failed for %s: %s", url, message)
+        if "ffmpeg" in message.lower() and FFMPEG_AVAILABLE:
+            LOGGER.warning(
+                "ffmpeg was expected at %s but yt-dlp reported it missing. Check that the binary is executable.",
+                FFMPEG_PATH,
+            )
     except Exception:  # pragma: no cover - defensive
         LOGGER.exception("Unexpected error during video download for %s", url)
     return None
