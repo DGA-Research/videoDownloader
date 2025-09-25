@@ -38,7 +38,7 @@ with st.form("download_form"):
     with st.expander("Cookies (required for YouTube/private content)"):
         st.markdown(
             """
-            1. Install the **Get cookies.txt** extension (Chrome/Edge or Firefox).
+            1. Install the [Get cookies.txt extension for Chrome/Edge](https://github.com/bugrammer/get_cookiestxt#chrome-extension) or the [Firefox add-on](https://github.com/bugrammer/get_cookiestxt#firefox-addon).
             2. Sign in to the site in that browser tab.
             3. Use the extension to export cookies for the current tab.
             4. Upload the exported .txt file here before downloading.
