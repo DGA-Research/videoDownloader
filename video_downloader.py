@@ -59,7 +59,14 @@ def configure_logging(level: str = "INFO") -> None:
     LOGGER.setLevel(resolved)
 
 
-def download_video(url: str, output_dir: Path, filename: Optional[str] = None) -> Optional[Path]:
+def download_video(
+    url: str,
+    output_dir: Path,
+    filename: Optional[str] = None,
+    cookies_path: Optional[Path] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> Optional[Path]:
     LOGGER.info("Starting download for %s", url)
     output_dir = Path(output_dir)
     LOGGER.debug("Resolved output directory to %s", output_dir)
@@ -99,6 +106,24 @@ def download_video(url: str, output_dir: Path, filename: Optional[str] = None) -
             "no_warnings": True,
         }
 
+    if cookies_path:
+        cookies_path = Path(cookies_path)
+        if cookies_path.exists():
+            ydl_opts["cookiefile"] = str(cookies_path)
+            LOGGER.info("Using cookies file at %s", cookies_path)
+        else:
+            LOGGER.warning("Cookies path %s does not exist; continuing without cookies.", cookies_path)
+
+    if username:
+        ydl_opts["username"] = username
+        LOGGER.info("Using provided username for authentication.")
+        if password:
+            ydl_opts["password"] = password
+        else:
+            LOGGER.warning("Username provided without password; yt-dlp may prompt for additional credentials.")
+    elif password:
+        LOGGER.warning("Password provided without username; ignoring password.")
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             LOGGER.debug("Executing yt-dlp with options: %s", ydl_opts)
@@ -135,6 +160,9 @@ def main() -> int:
     parser.add_argument("url", help="Video URL to download")
     parser.add_argument("--output-dir", default="downloads", help="Directory for saved videos")
     parser.add_argument("--filename", help="Optional base filename without extension")
+    parser.add_argument("--cookies-file", help="Path to a cookies file in Netscape format")
+    parser.add_argument("--username", help="Username for sites that require sign-in")
+    parser.add_argument("--password", help="Password for sites that require sign-in")
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -144,7 +172,14 @@ def main() -> int:
 
     args = parser.parse_args()
     configure_logging(args.log_level)
-    result = download_video(args.url, Path(args.output_dir), args.filename)
+    result = download_video(
+        args.url,
+        Path(args.output_dir),
+        args.filename,
+        Path(args.cookies_file) if args.cookies_file else None,
+        args.username,
+        args.password,
+    )
     if result:
         print(result)
         return 0
