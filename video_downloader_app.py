@@ -13,18 +13,15 @@ from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, LOGGER, download_vid
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%H:%M:%S"
-LOG_LEVELS = {
-    "ERROR": logging.ERROR,
-    "WARNING": logging.WARNING,
-    "INFO": logging.INFO,
-    "DEBUG": logging.DEBUG,
-}
+DEFAULT_OUTPUT_DIR = Path("downloads")
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
 st.title("Video Downloader")
-st.write("Download a single video from any yt-dlp-supported site. Provide a link and choose where to save it.")
+st.write(
+    "Download a single video from any yt-dlp-supported site. For YouTube and other gated sources, upload cookies exported from your browser."
+)
 
 if FFMPEG_AVAILABLE and FFMPEG_PATH:
     st.caption(f"ffmpeg available at {FFMPEG_PATH}")
@@ -36,18 +33,22 @@ elif not FFMPEG_AVAILABLE:
 
 with st.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
-    output_dir_text = st.text_input("Output Directory", value="downloads")
     filename = st.text_input("Optional filename (without extension)")
-    log_level_choice = st.selectbox("Log level", options=list(LOG_LEVELS.keys()), index=2)
 
-    with st.expander("Authentication options"):
+    with st.expander("Cookies (required for YouTube/private content)"):
+        st.markdown(
+            """
+            1. Install the **Get cookies.txt** extension (Chrome/Edge or Firefox).
+            2. Sign in to the site in that browser tab.
+            3. Use the extension to export cookies for the current tab.
+            4. Upload the exported .txt file here before downloading.
+            """
+        )
         cookies_file = st.file_uploader(
             "Cookies file (Netscape/yt-dlp format)",
             type=["txt", "json", "cookies"],
-            help="Upload exported browser cookies to access private or age-gated content.",
+            help="Upload exported browser cookies to access private, age-gated, or logged-in content.",
         )
-        username = st.text_input("Username", placeholder="Only if the site requires it")
-        password = st.text_input("Password", type="password")
 
     submitted = st.form_submit_button("Download")
 
@@ -55,24 +56,23 @@ if submitted:
     if not url.strip():
         st.error("Please enter a video URL.")
     else:
-        log_level = LOG_LEVELS[log_level_choice]
-        LOGGER.setLevel(log_level)
+        LOGGER.setLevel(logging.INFO)
 
         log_buffer = StringIO()
         handler = logging.StreamHandler(log_buffer)
-        handler.setLevel(log_level)
+        handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
 
         root_logger = logging.getLogger()
         previous_root_level = root_logger.level
         root_logger.addHandler(handler)
-        root_logger.setLevel(log_level)
+        root_logger.setLevel(logging.INFO)
 
         yt_logger = logging.getLogger("yt_dlp")
         previous_yt_level = yt_logger.level
-        yt_logger.setLevel(log_level)
+        yt_logger.setLevel(logging.INFO)
 
-        output_dir = Path(output_dir_text.strip() or "downloads")
+        output_dir = DEFAULT_OUTPUT_DIR
         result = None
         temp_cookie_path: Optional[Path] = None
         try:
@@ -88,8 +88,6 @@ if submitted:
                     output_dir,
                     filename.strip() or None,
                     temp_cookie_path,
-                    username.strip() or None,
-                    password or None,
                 )
         finally:
             handler.flush()
@@ -106,7 +104,9 @@ if submitted:
         if result:
             result_path = Path(result)
             st.success(f"Saved to {result_path}")
-            st.caption("The file path above is relative to where Streamlit is running.")
+            st.caption(
+                "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
+            )
 
             file_bytes = result_path.read_bytes() if result_path.exists() else None
             if file_bytes:
