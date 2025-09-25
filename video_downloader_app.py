@@ -4,6 +4,8 @@ Streamlit interface for the minimal video downloader.
 import logging
 from io import StringIO
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Optional
 
 import streamlit as st
 
@@ -37,6 +39,16 @@ with st.form("download_form"):
     output_dir_text = st.text_input("Output Directory", value="downloads")
     filename = st.text_input("Optional filename (without extension)")
     log_level_choice = st.selectbox("Log level", options=list(LOG_LEVELS.keys()), index=2)
+
+    with st.expander("Authentication options"):
+        cookies_file = st.file_uploader(
+            "Cookies file (Netscape/yt-dlp format)",
+            type=["txt", "json", "cookies"],
+            help="Upload exported browser cookies to access private or age-gated content.",
+        )
+        username = st.text_input("Username", placeholder="Only if the site requires it")
+        password = st.text_input("Password", type="password")
+
     submitted = st.form_submit_button("Download")
 
 if submitted:
@@ -62,14 +74,33 @@ if submitted:
 
         output_dir = Path(output_dir_text.strip() or "downloads")
         result = None
+        temp_cookie_path: Optional[Path] = None
         try:
+            if cookies_file is not None:
+                suffix = Path(cookies_file.name).suffix or ".txt"
+                with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(cookies_file.getbuffer())
+                    temp_cookie_path = Path(tmp.name)
+
             with st.spinner("Downloading video..."):
-                result = download_video(url.strip(), output_dir, filename.strip() or None)
+                result = download_video(
+                    url.strip(),
+                    output_dir,
+                    filename.strip() or None,
+                    temp_cookie_path,
+                    username.strip() or None,
+                    password or None,
+                )
         finally:
             handler.flush()
             root_logger.removeHandler(handler)
             root_logger.setLevel(previous_root_level)
             yt_logger.setLevel(previous_yt_level)
+            if temp_cookie_path and temp_cookie_path.exists():
+                try:
+                    temp_cookie_path.unlink()
+                except OSError:
+                    LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
 
         log_output = log_buffer.getvalue().strip()
         if result:
