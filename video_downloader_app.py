@@ -20,16 +20,10 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
 st.title("Video Downloader")
 st.write(
-    "Download a single video from any yt-dlp-supported site. For YouTube and other gated sources, upload cookies exported from your browser."
+    "Download a single video from most sites. For YouTube and other gated sources, upload cookies exported from your browser."
 )
 
-if FFMPEG_AVAILABLE and FFMPEG_PATH:
-    st.caption(f"ffmpeg available at {FFMPEG_PATH}")
-elif not FFMPEG_AVAILABLE:
-    st.info(
-        "ffmpeg is not available on this system. Downloads will fall back to the best single file. "
-        "Install ffmpeg to enable merging separate video and audio streams."
-    )
+st.caption("Known issues:")
 
 with st.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
@@ -39,7 +33,7 @@ with st.form("download_form"):
         st.markdown(
             """
             1. Install the [Get cookies.txt extension for Chrome/Edge](https://github.com/bugrammer/get_cookiestxt#chrome-extension) or the [Firefox add-on](https://github.com/bugrammer/get_cookiestxt#firefox-addon).
-            2. Sign in to the site in that browser tab.
+            2. Sign in to the site in that browser tab (e.g. youtube.com).
             3. Use the extension to export cookies for the current tab.
             4. Upload the exported .txt file here before downloading.
             """
@@ -138,3 +132,4 @@ st.write(
     "This downloader relies on yt-dlp, so any site supported by yt-dlp should work, "
     "provided the content is publicly accessible and not blocked by the host."
 )
+
