@@ -23,7 +23,7 @@ st.write(
     "Download a single video from most sites. For YouTube and other gated sources, upload cookies exported from your browser."
 )
 
-st.caption("Known issues:")
+st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 
 with st.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
@@ -132,4 +132,5 @@ st.write(
     "This downloader relies on yt-dlp, so any site supported by yt-dlp should work, "
     "provided the content is publicly accessible and not blocked by the host."
 )
+
 
