@@ -16,6 +16,13 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%H:%M:%S"
 DEFAULT_OUTPUT_DIR = Path("downloads")
 
+MIME_BY_SUFFIX = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+}
+
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
@@ -106,12 +113,7 @@ if submitted:
             file_bytes = result_path.read_bytes() if result_path.exists() else None
             if file_bytes:
                 suffix = result_path.suffix.lower()
-                mime = {
-                    ".mp4": "video/mp4",
-                    ".mkv": "video/x-matroska",
-                    ".webm": "video/webm",
-                    ".mov": "video/quicktime",
-                }.get(suffix, "application/octet-stream")
+                mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
                 st.download_button(
                     "Download video",
                     data=file_bytes,
@@ -203,6 +205,7 @@ if csv_submitted:
                                 progress = st.progress(0)
                                 status_placeholder = st.empty()
                                 results = []
+                                downloadable_items = []
                                 total = len(rows)
                                 filename_candidates = ("File Name", "Filename", "file_name", "Name")
 
@@ -233,6 +236,13 @@ if csv_submitted:
                                     if saved_path:
                                         results.append(
                                             {"Row": index, "URL": url_value, "Status": "downloaded", "Detail": str(saved_path)}
+                                        )
+                                        downloadable_items.append(
+                                            {
+                                                "row": index,
+                                                "path": str(Path(saved_path)),
+                                                "display_name": filename_value or Path(saved_path).name,
+                                            }
                                         )
                                     else:
                                         results.append(
@@ -269,6 +279,34 @@ if csv_submitted:
                                     st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
 
                                 st.table(results)
+
+                                if downloadable_items:
+                                    st.write("Download individual files:")
+                                    for item in downloadable_items:
+                                        saved_path = Path(item["path"])
+                                        row_index = item["row"]
+                                        display_name = item["display_name"]
+                                        if saved_path.exists():
+                                            try:
+                                                file_bytes = saved_path.read_bytes()
+                                            except OSError as exc:
+                                                st.warning(
+                                                    f"Could not read downloaded file for row {row_index}: {exc}"
+                                                )
+                                                continue
+                                            suffix = saved_path.suffix.lower()
+                                            mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                                            st.download_button(
+                                                f"Download row {row_index}: {display_name}",
+                                                data=file_bytes,
+                                                file_name=saved_path.name,
+                                                mime=mime,
+                                                key=f"csv_download_{row_index}",
+                                            )
+                                        else:
+                                            st.warning(
+                                                f"Downloaded file for row {row_index} not found at {saved_path}"
+                                            )
 
                             batch_log_output = log_buffer.getvalue().strip()
                             if batch_log_output:
