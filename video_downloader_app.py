@@ -31,6 +31,15 @@ MIME_BY_SUFFIX = {
 # Clipping helpers
 # -------------------------
 
+"""
+Streamlit interface for the minimal video downloader (+ optional clipping).
+"""
+# ... [imports remain unchanged] ...
+
+# -------------------------
+# Clipping helpers
+# -------------------------
+
 def _parse_timecode(value: Optional[str]) -> Optional[str]:
     """Accepts H:MM:SS(.ms), MM:SS(.ms), SS(.ms) and returns ffmpeg-friendly string or None."""
     if not value:
@@ -38,11 +47,9 @@ def _parse_timecode(value: Optional[str]) -> Optional[str]:
     s = str(value).strip()
     if not s:
         return None
-    # Normalize common variants like "1:2" -> "00:01:02"
     parts = s.split(":")
     try:
         if len(parts) == 1:
-            # seconds or seconds.ms
             sec = float(parts[0])
             return f"{sec:.3f}".rstrip("0").rstrip(".")
         elif len(parts) == 2:
@@ -68,28 +75,28 @@ def _clip_with_ffmpeg(
     end: Optional[str],
     audio_only: bool = False,
 ) -> bool:
-    """Invoke ffmpeg to trim media between start and end. Returns True on success.
+    """Trim media between start and end.
 
-    Uses stream copy when possible for speed. Falls back to re-encode for MP3 extraction when audio_only is True.
+    Behavior:
+    - If only start is provided → clip from start to end of file.
+    - If only end is provided → clip from beginning to end.
+    - If both are provided → clip from start to end.
     """
     if not FFMPEG_AVAILABLE or not FFMPEG_PATH:
         LOGGER.error("ffmpeg is not available; cannot clip media.")
         return False
 
     cmd = [str(FFMPEG_PATH), "-y"]
-
-    # Fast (keyframe) seek: place -ss before -i. If precise frame accuracy is needed, move -ss after -i.
     if start:
         cmd += ["-ss", start]
     cmd += ["-i", str(input_path)]
     if end:
+        # ffmpeg interprets "-to" as relative to start (or from 0 if no start)
         cmd += ["-to", end]
 
     if audio_only:
-        # Re-encode to MP3 for broad compatibility
         cmd += ["-vn", "-acodec", "libmp3lame", "-q:a", "2"]
     else:
-        # Try stream copy to avoid re-encoding
         cmd += ["-c", "copy"]
 
     cmd += [str(output_path)]
@@ -98,7 +105,6 @@ def _clip_with_ffmpeg(
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
             return True
-        # If stream copy failed (common when not cutting on keyframes), try a safe re-encode for video
         if not audio_only:
             reencode = [
                 str(FFMPEG_PATH), "-y",
@@ -115,7 +121,6 @@ def _clip_with_ffmpeg(
     except Exception as exc:
         LOGGER.exception("ffmpeg clipping failed: %s", exc)
         return False
-
 
 def _derive_clip_paths(base: Path, prefer_audio: bool, explicit_name: Optional[str]) -> Tuple[Path, bool]:
     """Create an output path for the clip next to the downloaded file.
@@ -519,3 +524,4 @@ st.divider()
 st.write(
     "This downloader relies on yt-dlp and ffmpeg. For clipping, provide start/end timecodes as H:MM:SS or seconds."
 )
+
