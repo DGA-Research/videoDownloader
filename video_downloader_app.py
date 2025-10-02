@@ -1,6 +1,7 @@
 """
 Streamlit interface for the minimal video downloader.
 """
+import csv
 import logging
 from io import StringIO
 from pathlib import Path
@@ -126,6 +127,152 @@ if submitted:
             st.text_area("Logs", log_output, height=240)
         else:
             st.caption("No log output captured for this run.")
+
+st.divider()
+st.header("Batch Download from CSV")
+
+with st.form("csv_download_form"):
+    csv_file = st.file_uploader(
+        "CSV file with URLs",
+        type=["csv"],
+        help="Upload a CSV containing a column named URL, Link, or Links.",
+    )
+    batch_cookies_file = st.file_uploader(
+        "Cookies file for all rows (optional)",
+        type=["txt", "json", "cookies"],
+        help="Upload cookies to use for every URL in the CSV batch.",
+        key="csv_cookies",
+    )
+    csv_submitted = st.form_submit_button("Download URLs from CSV")
+
+if csv_submitted:
+    if not csv_file:
+        st.error("Please upload a CSV file.")
+    else:
+        csv_bytes = csv_file.getvalue()
+        if not csv_bytes:
+            st.error("Uploaded CSV file is empty.")
+        else:
+            decoded = None
+            for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+                try:
+                    decoded = csv_bytes.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if decoded is None:
+                st.error("Could not decode CSV file. Please upload UTF-8 encoded CSVs.")
+            else:
+                reader = csv.DictReader(StringIO(decoded))
+                if not reader.fieldnames:
+                    st.error("CSV file has no header row to identify columns.")
+                else:
+                    url_column = next(
+                        (col for col in reader.fieldnames if col and col.strip().lower() in {"url", "link", "links"}),
+                        None,
+                    )
+                    if not url_column:
+                        st.error("No column named URL, Link, or Links was found in the CSV header.")
+                    else:
+                        rows = list(reader)
+                        if not rows:
+                            st.warning("CSV did not contain any data rows.")
+                        else:
+                            log_buffer = StringIO()
+                            handler = logging.StreamHandler(log_buffer)
+                            handler.setLevel(logging.INFO)
+                            handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+
+                            root_logger = logging.getLogger()
+                            previous_root_level = root_logger.level
+                            root_logger.addHandler(handler)
+                            root_logger.setLevel(logging.INFO)
+
+                            yt_logger = logging.getLogger("yt_dlp")
+                            previous_yt_level = yt_logger.level
+                            yt_logger.setLevel(logging.INFO)
+
+                            temp_cookie_path: Optional[Path] = None
+                            try:
+                                if batch_cookies_file is not None:
+                                    suffix = Path(batch_cookies_file.name).suffix or ".txt"
+                                    with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                        tmp.write(batch_cookies_file.getbuffer())
+                                        temp_cookie_path = Path(tmp.name)
+
+                                progress = st.progress(0)
+                                status_placeholder = st.empty()
+                                results = []
+                                total = len(rows)
+                                filename_candidates = ("File Name", "Filename", "file_name", "Name")
+
+                                for index, row in enumerate(rows, start=1):
+                                    url_value = (row.get(url_column) or "").strip()
+                                    if not url_value:
+                                        LOGGER.warning("Row %s has an empty URL; skipping.", index)
+                                        results.append(
+                                            {"Row": index, "URL": "", "Status": "skipped", "Detail": "Missing URL value."}
+                                        )
+                                        progress.progress(index / total)
+                                        status_placeholder.write(f"Processed {index}/{total}")
+                                        continue
+
+                                    filename_value = None
+                                    for candidate in filename_candidates:
+                                        value = row.get(candidate)
+                                        if value and value.strip():
+                                            filename_value = value.strip()
+                                            break
+
+                                    saved_path = download_video(
+                                        url_value,
+                                        DEFAULT_OUTPUT_DIR,
+                                        filename_value,
+                                        temp_cookie_path,
+                                    )
+                                    if saved_path:
+                                        results.append(
+                                            {"Row": index, "URL": url_value, "Status": "downloaded", "Detail": str(saved_path)}
+                                        )
+                                    else:
+                                        results.append(
+                                            {"Row": index, "URL": url_value, "Status": "failed", "Detail": "Download failed."}
+                                        )
+                                    progress.progress(index / total)
+                                    status_placeholder.write(f"Processed {index}/{total}")
+
+                                progress.empty()
+                                status_placeholder.empty()
+                            finally:
+                                handler.flush()
+                                root_logger.removeHandler(handler)
+                                root_logger.setLevel(previous_root_level)
+                                yt_logger.setLevel(previous_yt_level)
+                                if temp_cookie_path and temp_cookie_path.exists():
+                                    try:
+                                        temp_cookie_path.unlink()
+                                    except OSError:
+                                        LOGGER.warning(
+                                            "Failed to remove temporary cookies file at %s", temp_cookie_path
+                                        )
+
+                            if results:
+                                success_count = sum(1 for item in results if item["Status"] == "downloaded")
+                                failure_count = sum(1 for item in results if item["Status"] == "failed")
+                                skipped_count = sum(1 for item in results if item["Status"] == "skipped")
+
+                                if success_count:
+                                    st.success(f"Downloaded {success_count} item(s) from the CSV.")
+                                if failure_count:
+                                    st.error(f"{failure_count} download(s) failed. Check the logs for details.")
+                                if skipped_count:
+                                    st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
+
+                                st.table(results)
+
+                            batch_log_output = log_buffer.getvalue().strip()
+                            if batch_log_output:
+                                st.text_area("Batch logs", batch_log_output, height=240)
 
 st.divider()
 st.write(
