@@ -23,6 +23,100 @@ MIME_BY_SUFFIX = {
     ".mov": "video/quicktime",
 }
 
+
+# -------------------------
+# Helpers (UI rendering)
+# -------------------------
+
+def _display_single_result(data: dict) -> None:
+    """Render the single-download panel from a stored result dict in session_state."""
+    if not data:
+        return
+
+    saved_path_str = data.get("path")
+    log_output = data.get("log_output", "")
+
+    if saved_path_str:
+        saved_path = Path(saved_path_str)
+        st.success(f"Saved to {saved_path}")
+        st.caption(
+            "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
+        )
+        if saved_path.exists():
+            try:
+                file_bytes = saved_path.read_bytes()
+                suffix = saved_path.suffix.lower()
+                mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                st.download_button(
+                    "Download video",
+                    data=file_bytes,
+                    file_name=saved_path.name,
+                    mime=mime,
+                    key=f"single_download_{saved_path.name}",
+                )
+            except OSError as exc:
+                st.warning(f"Downloaded file could not be read for download: {exc}")
+        else:
+            st.warning("Downloaded file was not found on disk.")
+
+    if log_output:
+        st.text_area("Logs", log_output, height=240, key="single_logs")
+
+
+def _display_batch_results(data: dict) -> None:
+    if not data:
+        return
+
+    success_count = data.get("success_count", 0)
+    failure_count = data.get("failure_count", 0)
+    skipped_count = data.get("skipped_count", 0)
+
+    if success_count:
+        st.success(f"Downloaded {success_count} item(s) from the CSV.")
+    if failure_count:
+        st.error(f"{failure_count} download(s) failed. Check the logs for details.")
+    if skipped_count:
+        st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
+
+    results = data.get("results") or []
+    if results:
+        st.table(results)
+
+    # IMPORTANT: Render per-row download buttons from stored state so they persist across reruns
+    downloadable_items = data.get("downloadable_items") or []
+    if downloadable_items:
+        st.write("Download individual files:")
+        for item in downloadable_items:
+            saved_path = Path(item["path"]).resolve()
+            row_index = item["row"]
+            display_name = item["display_name"]
+            if saved_path.exists():
+                try:
+                    file_bytes = saved_path.read_bytes()
+                except OSError as exc:
+                    st.warning(f"Could not read downloaded file for row {row_index}: {exc}")
+                    continue
+                suffix = saved_path.suffix.lower()
+                mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                # Use a stable, unique key so buttons don't collapse other buttons on click
+                st.download_button(
+                    f"Download row {row_index}: {display_name}",
+                    data=file_bytes,
+                    file_name=saved_path.name,
+                    mime=mime,
+                    key=f"csv_download_{row_index}_{saved_path.name}",
+                )
+            else:
+                st.warning(f"Downloaded file for row {row_index} not found at {saved_path}")
+
+    log_output = data.get("log_output", "")
+    if log_output:
+        st.text_area("Batch logs", log_output, height=240, key="csv_batch_logs")
+
+
+# -------------------------
+# Page config / Header
+# -------------------------
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
@@ -33,6 +127,10 @@ st.write(
 
 st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 
+
+# -------------------------
+# Single Video Section
+# -------------------------
 with st.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
     filename = st.text_input("Optional filename (without extension)")
@@ -103,33 +201,20 @@ if submitted:
                     LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
 
         log_output = log_buffer.getvalue().strip()
-        if result:
-            result_path = Path(result)
-            st.success(f"Saved to {result_path}")
-            st.caption(
-                "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
-            )
+        # Persist single result to session_state so the download button survives reruns
+        st.session_state["single_result"] = {
+            "path": str(result) if result else None,
+            "log_output": log_output,
+        }
 
-            file_bytes = result_path.read_bytes() if result_path.exists() else None
-            if file_bytes:
-                suffix = result_path.suffix.lower()
-                mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-                st.download_button(
-                    "Download video",
-                    data=file_bytes,
-                    file_name=result_path.name,
-                    mime=mime,
-                )
-            else:
-                st.warning("Downloaded file could not be read for download.")
-        else:
-            st.error("Download failed. Check the logs for more details.")
+# Always render the last single download result (if any), so the button persists after clicks/reruns
+if st.session_state.get("single_result"):
+    _display_single_result(st.session_state["single_result"])
 
-        if log_output:
-            st.text_area("Logs", log_output, height=240)
-        else:
-            st.caption("No log output captured for this run.")
 
+# -------------------------
+# Batch Section
+# -------------------------
 st.divider()
 st.header("Batch Download from CSV")
 
@@ -148,6 +233,8 @@ with st.form("csv_download_form"):
     csv_submitted = st.form_submit_button("Download URLs from CSV")
 
 if csv_submitted:
+    # Clear previous batch results only when a NEW batch is submitted
+    st.session_state.pop("batch_results", None)
     if not csv_file:
         st.error("Please upload a CSV file.")
     else:
@@ -234,13 +321,14 @@ if csv_submitted:
                                         temp_cookie_path,
                                     )
                                     if saved_path:
+                                        saved_path = Path(saved_path).resolve()
                                         results.append(
                                             {"Row": index, "URL": url_value, "Status": "downloaded", "Detail": str(saved_path)}
                                         )
                                         downloadable_items.append(
                                             {
                                                 "row": index,
-                                                "path": str(Path(saved_path)),
+                                                "path": str(saved_path),
                                                 "display_name": filename_value or Path(saved_path).name,
                                             }
                                         )
@@ -266,56 +354,28 @@ if csv_submitted:
                                             "Failed to remove temporary cookies file at %s", temp_cookie_path
                                         )
 
-                            if results:
-                                success_count = sum(1 for item in results if item["Status"] == "downloaded")
-                                failure_count = sum(1 for item in results if item["Status"] == "failed")
-                                skipped_count = sum(1 for item in results if item["Status"] == "skipped")
-
-                                if success_count:
-                                    st.success(f"Downloaded {success_count} item(s) from the CSV.")
-                                if failure_count:
-                                    st.error(f"{failure_count} download(s) failed. Check the logs for details.")
-                                if skipped_count:
-                                    st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
-
-                                st.table(results)
-
-                                if downloadable_items:
-                                    st.write("Download individual files:")
-                                    for item in downloadable_items:
-                                        saved_path = Path(item["path"])
-                                        row_index = item["row"]
-                                        display_name = item["display_name"]
-                                        if saved_path.exists():
-                                            try:
-                                                file_bytes = saved_path.read_bytes()
-                                            except OSError as exc:
-                                                st.warning(
-                                                    f"Could not read downloaded file for row {row_index}: {exc}"
-                                                )
-                                                continue
-                                            suffix = saved_path.suffix.lower()
-                                            mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-                                            st.download_button(
-                                                f"Download row {row_index}: {display_name}",
-                                                data=file_bytes,
-                                                file_name=saved_path.name,
-                                                mime=mime,
-                                                key=f"csv_download_{row_index}",
-                                            )
-                                        else:
-                                            st.warning(
-                                                f"Downloaded file for row {row_index} not found at {saved_path}"
-                                            )
-
+                            success_count = sum(1 for item in results if item["Status"] == "downloaded")
+                            failure_count = sum(1 for item in results if item["Status"] == "failed")
+                            skipped_count = sum(1 for item in results if item["Status"] == "skipped")
                             batch_log_output = log_buffer.getvalue().strip()
-                            if batch_log_output:
-                                st.text_area("Batch logs", batch_log_output, height=240)
+                            st.session_state["batch_results"] = {
+                                "results": results,
+                                "downloadable_items": downloadable_items,
+                                "success_count": success_count,
+                                "failure_count": failure_count,
+                                "skipped_count": skipped_count,
+                                "log_output": batch_log_output,
+                            }
+
+# Always render the last batch results (if any), so all row download buttons persist after clicks/reruns
+if st.session_state.get("batch_results"):
+    st.divider()
+    st.subheader("Batch results")
+    _display_batch_results(st.session_state["batch_results"])
+
 
 st.divider()
 st.write(
     "This downloader relies on yt-dlp, so any site supported by yt-dlp should work, "
     "provided the content is publicly accessible and not blocked by the host."
 )
-
-
