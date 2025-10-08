@@ -1,17 +1,16 @@
 """
-Streamlit interface for the minimal video downloader (+ optional clipping).
+Streamlit interface for the minimal video downloader.
 """
 import csv
 import logging
-import subprocess
 from io import StringIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional, Tuple
+from typing import Optional
 
 import streamlit as st
 
-from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, LOGGER, download_video
+from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, LOGGER, download_video, parse_time_to_seconds
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%H:%M:%S"
@@ -22,155 +21,8 @@ MIME_BY_SUFFIX = {
     ".mkv": "video/x-matroska",
     ".webm": "video/webm",
     ".mov": "video/quicktime",
-    ".m4a": "audio/mp4",
-    ".mp3": "audio/mpeg",
 }
 
-
-# -------------------------
-# Clipping helpers
-# -------------------------
-
-"""
-Streamlit interface for the minimal video downloader (+ optional clipping).
-"""
-# ... [imports remain unchanged] ...
-
-# -------------------------
-# Clipping helpers
-# -------------------------
-
-def _parse_timecode(value: Optional[str]) -> Optional[str]:
-    """Accepts H:MM:SS(.ms), MM:SS(.ms), SS(.ms) and returns ffmpeg-friendly string or None."""
-    if not value:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    parts = s.split(":")
-    try:
-        if len(parts) == 1:
-            sec = float(parts[0])
-            return f"{sec:.3f}".rstrip("0").rstrip(".")
-        elif len(parts) == 2:
-            m = int(parts[0])
-            sec = float(parts[1])
-            total = m * 60 + sec
-            return f"{total:.3f}".rstrip("0").rstrip(".")
-        elif len(parts) == 3:
-            h = int(parts[0])
-            m = int(parts[1])
-            sec = float(parts[2])
-            total = h * 3600 + m * 60 + sec
-            return f"{total:.3f}".rstrip("0").rstrip(".")
-    except ValueError:
-        return None
-    return None
-
-
-def _clip_with_ffmpeg(
-    input_path: Path,
-    output_path: Path,
-    start: Optional[str],
-    end: Optional[str],
-    audio_only: bool = False,
-) -> bool:
-    """Trim media between start and end.
-
-    Behavior:
-    - If only start is provided → clip from start to end of file.
-    - If only end is provided → clip from beginning to end.
-    - If both are provided → clip from start to end.
-    """
-    if not FFMPEG_AVAILABLE or not FFMPEG_PATH:
-        LOGGER.error("ffmpeg is not available; cannot clip media.")
-        return False
-
-    cmd = [str(FFMPEG_PATH), "-y"]
-    if start:
-        cmd += ["-ss", start]
-    cmd += ["-i", str(input_path)]
-    if end:
-        # ffmpeg interprets "-to" as relative to start (or from 0 if no start)
-        cmd += ["-to", end]
-
-    if audio_only:
-        cmd += ["-vn", "-acodec", "libmp3lame", "-q:a", "2"]
-    else:
-        cmd += ["-c", "copy"]
-
-    cmd += [str(output_path)]
-
-    try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
-            return True
-        if not audio_only:
-            reencode = [
-                str(FFMPEG_PATH), "-y",
-                *( ["-ss", start] if start else [] ),
-                "-i", str(input_path),
-                *( ["-to", end] if end else [] ),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-movflags", "+faststart",
-                str(output_path),
-            ]
-            result2 = subprocess.run(reencode, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            return result2.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
-        return False
-    except Exception as exc:
-        LOGGER.exception("ffmpeg clipping failed: %s", exc)
-        return False
-
-def _derive_clip_paths(base: Path, prefer_audio: bool, explicit_name: Optional[str]) -> Tuple[Path, bool]:
-    """Create an output path for the clip next to the downloaded file.
-    Returns (path, audio_only?).
-    """
-    if prefer_audio:
-        name = (explicit_name or base.stem) + ".mp3"
-        return base.with_name(name), True
-    # default: keep container as mp4 unless base has other suffix
-    suffix = base.suffix if base.suffix else ".mp4"
-    name = (explicit_name or base.stem) + suffix
-    return base.with_name(name), False
-
-
-# -------------------------
-# UI Helpers
-# -------------------------
-
-def _display_single_result(data: dict) -> None:
-    if not data:
-        return
-
-    saved_path_str = data.get("path")
-    log_output = data.get("log_output", "")
-
-    if saved_path_str:
-        saved_path = Path(saved_path_str)
-        st.success(f"Saved to {saved_path}")
-        st.caption(
-            "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
-        )
-        if saved_path.exists():
-            try:
-                file_bytes = saved_path.read_bytes()
-                suffix = saved_path.suffix.lower()
-                mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-                st.download_button(
-                    "Download video",
-                    data=file_bytes,
-                    file_name=saved_path.name,
-                    mime=mime,
-                    key=f"single_download_{saved_path.name}",
-                )
-            except OSError as exc:
-                st.warning(f"Downloaded file could not be read for download: {exc}")
-        else:
-            st.warning("Downloaded file was not found on disk.")
-
-    if log_output:
-        st.text_area("Logs", log_output, height=240, key="single_logs")
 
 
 def _display_batch_results(data: dict) -> None:
@@ -196,7 +48,7 @@ def _display_batch_results(data: dict) -> None:
     if downloadable_items:
         st.write("Download individual files:")
         for item in downloadable_items:
-            saved_path = Path(item["path"]).resolve()
+            saved_path = Path(item["path"])
             row_index = item["row"]
             display_name = item["display_name"]
             if saved_path.exists():
@@ -212,7 +64,7 @@ def _display_batch_results(data: dict) -> None:
                     data=file_bytes,
                     file_name=saved_path.name,
                     mime=mime,
-                    key=f"csv_download_{row_index}_{saved_path.name}",
+                    key=f"csv_download_{row_index}",
                 )
             else:
                 st.warning(f"Downloaded file for row {row_index} not found at {saved_path}")
@@ -221,35 +73,31 @@ def _display_batch_results(data: dict) -> None:
     if log_output:
         st.text_area("Batch logs", log_output, height=240, key="csv_batch_logs")
 
-
-# -------------------------
-# Page config / Header
-# -------------------------
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
 st.title("Video Downloader")
 st.write(
-    "Download a single video or batch from CSV. Optionally clip to start/end times and export audio-only."
+    "Download a single video from most sites. For YouTube and other gated sources, upload cookies exported from your browser."
 )
 
-st.caption("Known issues: Some region-gated sources may require valid cookies.")
+st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
+if not FFMPEG_AVAILABLE:
+    st.warning("ffmpeg not detected. Install ffmpeg to enable audio/video clipping and proper muxing.")
 
-
-# -------------------------
-# Single Video Section
-# -------------------------
 with st.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
-    filename = st.text_input("Optional output name (without extension)")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        start_tc = st.text_input("Clip start (H:MM:SS or seconds)", placeholder="", help="Leave blank to start from 0")
-    with col2:
-        end_tc = st.text_input("Clip end (H:MM:SS or seconds)", placeholder="", help="Leave blank to keep till end")
-    with col3:
-        audio_only_single = st.checkbox("Export audio-only (MP3)", value=False)
+    filename = st.text_input("Optional filename (without extension)")
+    clip_start_input = st.text_input(
+        "Clip start (optional)",
+        placeholder="0:01:30",
+        help="Accepts HH:MM:SS, MM:SS, or seconds. Requires ffmpeg.",
+    )
+    clip_end_input = st.text_input(
+        "Clip end (optional)",
+        placeholder="0:02:00",
+        help="Accepts HH:MM:SS, MM:SS, or seconds. Requires ffmpeg.",
+    )
 
     with st.expander("Cookies (required for YouTube/private content)"):
         st.markdown(
@@ -272,90 +120,115 @@ if submitted:
     if not url.strip():
         st.error("Please enter a video URL.")
     else:
-        LOGGER.setLevel(logging.INFO)
+        clip_start_raw = clip_start_input.strip()
+        clip_end_raw = clip_end_input.strip()
+        clip_start_seconds: Optional[float] = None
+        clip_end_seconds: Optional[float] = None
+        validation_errors = []
 
-        log_buffer = StringIO()
-        handler = logging.StreamHandler(log_buffer)
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+        if clip_start_raw:
+            clip_start_seconds = parse_time_to_seconds(clip_start_raw)
+            if clip_start_seconds is None:
+                validation_errors.append("Clip start time must be in HH:MM:SS or seconds format.")
+        if clip_end_raw:
+            clip_end_seconds = parse_time_to_seconds(clip_end_raw)
+            if clip_end_seconds is None:
+                validation_errors.append("Clip end time must be in HH:MM:SS or seconds format.")
+        if (
+            clip_start_seconds is not None
+            and clip_end_seconds is not None
+            and clip_end_seconds <= clip_start_seconds
+        ):
+            validation_errors.append("Clip end time must be greater than clip start time.")
+        if (clip_start_seconds is not None or clip_end_seconds is not None) and not FFMPEG_AVAILABLE:
+            validation_errors.append("Clipping requires ffmpeg, which was not detected.")
 
-        root_logger = logging.getLogger()
-        previous_root_level = root_logger.level
-        root_logger.addHandler(handler)
-        root_logger.setLevel(logging.INFO)
+        if validation_errors:
+            for message in validation_errors:
+                st.error(message)
+        else:
+            LOGGER.setLevel(logging.INFO)
 
-        yt_logger = logging.getLogger("yt_dlp")
-        previous_yt_level = yt_logger.level
-        yt_logger.setLevel(logging.INFO)
+            log_buffer = StringIO()
+            handler = logging.StreamHandler(log_buffer)
+            handler.setLevel(logging.INFO)
+            handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
 
-        output_dir = DEFAULT_OUTPUT_DIR
-        result = None
-        temp_cookie_path: Optional[Path] = None
-        try:
-            if cookies_file is not None:
-                suffix = Path(cookies_file.name).suffix or ".txt"
-                with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(cookies_file.getbuffer())
-                    temp_cookie_path = Path(tmp.name)
+            root_logger = logging.getLogger()
+            previous_root_level = root_logger.level
+            root_logger.addHandler(handler)
+            root_logger.setLevel(logging.INFO)
 
-            with st.spinner("Downloading video..."):
-                result = download_video(
-                    url.strip(),
-                    output_dir,
-                    filename.strip() or None,
-                    temp_cookie_path,
+            yt_logger = logging.getLogger("yt_dlp")
+            previous_yt_level = yt_logger.level
+            yt_logger.setLevel(logging.INFO)
+
+            output_dir = DEFAULT_OUTPUT_DIR
+            result = None
+            temp_cookie_path: Optional[Path] = None
+            try:
+                if cookies_file is not None:
+                    suffix = Path(cookies_file.name).suffix or ".txt"
+                    with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(cookies_file.getbuffer())
+                        temp_cookie_path = Path(tmp.name)
+
+                with st.spinner("Downloading video..."):
+                    result = download_video(
+                        url.strip(),
+                        output_dir,
+                        filename.strip() or None,
+                        temp_cookie_path,
+                        clip_start=clip_start_seconds,
+                        clip_end=clip_end_seconds,
+                    )
+            finally:
+                handler.flush()
+                root_logger.removeHandler(handler)
+                root_logger.setLevel(previous_root_level)
+                yt_logger.setLevel(previous_yt_level)
+                if temp_cookie_path and temp_cookie_path.exists():
+                    try:
+                        temp_cookie_path.unlink()
+                    except OSError:
+                        LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
+
+            log_output = log_buffer.getvalue().strip()
+            if result:
+                result_path = Path(result)
+                st.success(f"Saved to {result_path}")
+                st.caption(
+                    "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
                 )
 
-            # Optional clipping
-            parsed_start = _parse_timecode(start_tc)
-            parsed_end = _parse_timecode(end_tc)
-            final_path = Path(result) if result else None
-            if result and (parsed_start or parsed_end or audio_only_single):
-                base_path = Path(result)
-                clip_path, audio_only_flag = _derive_clip_paths(
-                    base_path, prefer_audio=audio_only_single, explicit_name=(filename.strip() if filename else None)
-                )
-                with st.spinner("Clipping..."):
-                    ok = _clip_with_ffmpeg(base_path, clip_path, parsed_start, parsed_end, audio_only=audio_only_flag)
-                if ok:
-                    final_path = clip_path
+                file_bytes = result_path.read_bytes() if result_path.exists() else None
+                if file_bytes:
+                    suffix = result_path.suffix.lower()
+                    mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                    st.download_button(
+                        "Download video",
+                        data=file_bytes,
+                        file_name=result_path.name,
+                        mime=mime,
+                    )
                 else:
-                    st.warning("Clipping failed; returning original download.")
-                    final_path = base_path
-        finally:
-            handler.flush()
-            root_logger.removeHandler(handler)
-            root_logger.setLevel(previous_root_level)
-            yt_logger.setLevel(previous_yt_level)
-            if temp_cookie_path and temp_cookie_path.exists():
-                try:
-                    temp_cookie_path.unlink()
-                except OSError:
-                    LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
+                    st.warning("Downloaded file could not be read for download.")
+            else:
+                st.error("Download failed. Check the logs for more details.")
 
-        log_output = log_buffer.getvalue().strip()
-        st.session_state["single_result"] = {
-            "path": str(final_path) if result else None,
-            "log_output": log_output,
-        }
+            if log_output:
+                st.text_area("Logs", log_output, height=240)
+            else:
+                st.caption("No log output captured for this run.")
 
-# Always render the last single download result (if any)
-if st.session_state.get("single_result"):
-    _display_single_result(st.session_state["single_result"])
-
-
-# -------------------------
-# Batch Section (CSV)
-# -------------------------
-# Expected headers (case-insensitive): URL, Download Type (audio/video) [optional], File Name [optional], Clip Start Time, Clip End Time
 st.divider()
 st.header("Batch Download from CSV")
 
 with st.form("csv_download_form"):
     csv_file = st.file_uploader(
-        "CSV file with URLs (columns: URL, File Name, Clip Start Time, Clip End Time, Download Type)",
+        "CSV file with URLs",
         type=["csv"],
-        help="Upload a CSV containing at least a URL column. Optional: File Name, Clip Start Time, Clip End Time, Download Type (audio/video).",
+        help="Upload a CSV containing a column named URL, Link, or Links.",
     )
     batch_cookies_file = st.file_uploader(
         "Cookies file for all rows (optional)",
@@ -388,16 +261,10 @@ if csv_submitted:
                 if not reader.fieldnames:
                     st.error("CSV file has no header row to identify columns.")
                 else:
-                    # Normalize header names for flexible matching
-                    def _find(colset):
-                        return next((c for c in reader.fieldnames if c and c.strip().lower() in colset), None)
-
-                    url_column = _find({"url", "link", "links"})
-                    file_name_column = _find({"file name", "filename", "file_name", "name"})
-                    start_column = _find({"clip start time", "start", "start time", "clip start"})
-                    end_column = _find({"clip end time", "end", "end time", "clip end"})
-                    type_column = _find({"download type", "type", "media type"})
-
+                    url_column = next(
+                        (col for col in reader.fieldnames if col and col.strip().lower() in {"url", "link", "links"}),
+                        None,
+                    )
                     if not url_column:
                         st.error("No column named URL, Link, or Links was found in the CSV header.")
                     else:
@@ -432,58 +299,88 @@ if csv_submitted:
                                 results = []
                                 downloadable_items = []
                                 total = len(rows)
+                                filename_candidates = ("File Name", "Filename", "file_name", "Name")
 
                                 for index, row in enumerate(rows, start=1):
                                     url_value = (row.get(url_column) or "").strip()
                                     if not url_value:
                                         LOGGER.warning("Row %s has an empty URL; skipping.", index)
-                                        results.append({"Row": index, "URL": "", "Status": "skipped", "Detail": "Missing URL value."})
+                                        results.append(
+                                            {"Row": index, "URL": "", "Status": "skipped", "Detail": "Missing URL value."}
+                                        )
                                         progress.progress(index / total)
                                         status_placeholder.write(f"Processed {index}/{total}")
                                         continue
 
-                                    filename_value = (row.get(file_name_column) or "").strip() if file_name_column else None
-                                    start_value = _parse_timecode((row.get(start_column) or "").strip() if start_column else None)
-                                    end_value = _parse_timecode((row.get(end_column) or "").strip() if end_column else None)
-                                    media_type = (row.get(type_column) or "").strip().lower() if type_column else ""
-                                    prefer_audio = media_type == "audio"
+                                    filename_value = None
+                                    for candidate in filename_candidates:
+                                        value = row.get(candidate)
+                                        if value and value.strip():
+                                            filename_value = value.strip()
+                                            break
+
+                                    clip_start_raw = (row.get("Clip Start Time") or "").strip()
+                                    clip_end_raw = (row.get("Clip End Time") or "").strip()
+                                    clip_start_seconds: Optional[float] = None
+                                    clip_end_seconds: Optional[float] = None
+                                    row_errors = []
+
+                                    if clip_start_raw:
+                                        clip_start_seconds = parse_time_to_seconds(clip_start_raw)
+                                        if clip_start_seconds is None:
+                                            row_errors.append("Invalid clip start time value.")
+                                    if clip_end_raw:
+                                        clip_end_seconds = parse_time_to_seconds(clip_end_raw)
+                                        if clip_end_seconds is None:
+                                            row_errors.append("Invalid clip end time value.")
+                                    if (
+                                        clip_start_seconds is not None
+                                        and clip_end_seconds is not None
+                                        and clip_end_seconds <= clip_start_seconds
+                                    ):
+                                        row_errors.append("Clip end time must be greater than clip start time.")
+                                    if (
+                                        (clip_start_seconds is not None or clip_end_seconds is not None)
+                                        and not FFMPEG_AVAILABLE
+                                    ):
+                                        row_errors.append("ffmpeg not available for clipping.")
+
+                                    if row_errors:
+                                        results.append(
+                                            {
+                                                "Row": index,
+                                                "URL": url_value,
+                                                "Status": "failed",
+                                                "Detail": "; ".join(row_errors),
+                                            }
+                                        )
+                                        progress.progress(index / total)
+                                        status_placeholder.write(f"Processed {index}/{total}")
+                                        continue
 
                                     saved_path = download_video(
                                         url_value,
                                         DEFAULT_OUTPUT_DIR,
-                                        filename_value or None,
+                                        filename_value,
                                         temp_cookie_path,
+                                        clip_start=clip_start_seconds,
+                                        clip_end=clip_end_seconds,
                                     )
-
                                     if saved_path:
-                                        base_path = Path(saved_path).resolve()
-                                        final_saved = base_path
-
-                                        if start_value or end_value or prefer_audio:
-                                            clip_path, audio_only_flag = _derive_clip_paths(base_path, prefer_audio, filename_value or None)
-                                            ok = _clip_with_ffmpeg(base_path, clip_path, start_value, end_value, audio_only=audio_only_flag)
-                                            if ok:
-                                                final_saved = clip_path
-                                            else:
-                                                LOGGER.warning("Clipping failed for row %s; keeping original.", index)
-
-                                        results.append({
-                                            "Row": index,
-                                            "URL": url_value,
-                                            "Status": "downloaded",
-                                            "Detail": str(final_saved),
-                                            "Start": start_value or "",
-                                            "End": end_value or "",
-                                            "Type": ("audio" if (prefer_audio or final_saved.suffix.lower() in {".mp3", ".m4a"}) else "video"),
-                                        })
-                                        downloadable_items.append({
-                                            "row": index,
-                                            "path": str(final_saved),
-                                            "display_name": filename_value or final_saved.name,
-                                        })
+                                        results.append(
+                                            {"Row": index, "URL": url_value, "Status": "downloaded", "Detail": str(saved_path)}
+                                        )
+                                        downloadable_items.append(
+                                            {
+                                                "row": index,
+                                                "path": str(Path(saved_path)),
+                                                "display_name": filename_value or Path(saved_path).name,
+                                            }
+                                        )
                                     else:
-                                        results.append({"Row": index, "URL": url_value, "Status": "failed", "Detail": "Download failed."})
-
+                                        results.append(
+                                            {"Row": index, "URL": url_value, "Status": "failed", "Detail": "Download failed."}
+                                        )
                                     progress.progress(index / total)
                                     status_placeholder.write(f"Processed {index}/{total}")
 
@@ -498,7 +395,9 @@ if csv_submitted:
                                     try:
                                         temp_cookie_path.unlink()
                                     except OSError:
-                                        LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
+                                        LOGGER.warning(
+                                            "Failed to remove temporary cookies file at %s", temp_cookie_path
+                                        )
 
                             success_count = sum(1 for item in results if item["Status"] == "downloaded")
                             failure_count = sum(1 for item in results if item["Status"] == "failed")
@@ -513,15 +412,10 @@ if csv_submitted:
                                 "log_output": batch_log_output,
                             }
 
-# Always render the last batch results (if any)
-if st.session_state.get("batch_results"):
-    st.divider()
-    st.subheader("Batch results")
-    _display_batch_results(st.session_state["batch_results"])
-
-
 st.divider()
 st.write(
-    "This downloader relies on yt-dlp and ffmpeg. For clipping, provide start/end timecodes as H:MM:SS or seconds."
+    "This downloader relies on yt-dlp, so any site supported by yt-dlp should work, "
+    "provided the content is publicly accessible and not blocked by the host."
 )
+
 
