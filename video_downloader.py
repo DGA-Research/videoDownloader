@@ -106,7 +106,8 @@ def _format_ffmpeg_time(seconds: float) -> str:
 
 
 def _next_clip_path(source: Path) -> Path:
-    candidate = source.with_name(f"{source.stem}_clip{source.suffix}")
+    suffix = source.suffix or ".mp4"
+    candidate = source.with_name(f"{source.stem}_clip{suffix}")
     counter = 1
     while candidate.exists():
         candidate = source.with_name(f"{source.stem}_clip_{counter}{source.suffix}")
@@ -183,7 +184,16 @@ def download_video(
         LOGGER.error("Unable to create output directory %s: %s", output_dir, exc)
         return None
 
-    template = str(output_dir / (filename or "%(title)s.%(ext)s"))
+    template_filename: Optional[str] = None
+    if filename:
+        trimmed = filename.strip()
+        if trimmed:
+            candidate = Path(trimmed)
+            if candidate.suffix:
+                template_filename = trimmed
+            else:
+                template_filename = f"{trimmed}.%(ext)s"
+    template = str(output_dir / (template_filename or "%(title)s.%(ext)s"))
     LOGGER.debug("Using output template %s", template)
 
     if FFMPEG_AVAILABLE:
@@ -275,6 +285,26 @@ def download_video(
                 if ext:
                     file_path = file_path.with_suffix(f".{ext}")
                 LOGGER.debug("Derived file path %s using metadata", file_path)
+            if file_path.suffix == "":
+                info_ext = info.get("ext")
+                if info_ext:
+                    info_ext = info_ext.lstrip(".")
+                inferred_ext = None
+                if requested and requested[0].get("ext"):
+                    inferred_ext = requested[0]["ext"].lstrip(".")
+                elif info_ext:
+                    inferred_ext = info_ext
+                if inferred_ext:
+                    target_with_ext = file_path.with_suffix(f".{inferred_ext}")
+                    try:
+                        file_path.rename(target_with_ext)
+                        file_path = target_with_ext
+                        LOGGER.debug("Renamed download to include extension: %s", file_path)
+                    except OSError as exc:
+                        LOGGER.warning("Failed to rename %s with extension %s: %s", file_path, inferred_ext, exc)
+                else:
+                    LOGGER.warning("Downloaded file %s has no extension and one could not be inferred.", file_path)
+
             LOGGER.info("Downloaded %s -> %s", url, file_path)
 
             if clip_start_seconds is not None or clip_end_seconds is not None:
