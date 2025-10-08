@@ -224,6 +224,10 @@ if submitted:
 st.divider()
 st.header("Batch Download from CSV")
 
+batch_results = st.session_state.get("batch_results")
+if batch_results:
+    _display_batch_results(batch_results)
+
 with st.form("csv_download_form"):
     csv_file = st.file_uploader(
         "CSV file with URLs",
