@@ -712,7 +712,6 @@ with batch_download_expander:
         st.session_state["batch_pause_after"] = 0
     if batch_locked:
         pause_after_sidebar = int(st.session_state.get("batch_pause_after", 0))
-        st.caption("Pause and resume controls are available while the current batch is paused.")
     else:
         pause_after_sidebar = st.number_input(
             "Process rows then pause (0 = run all)",
