@@ -54,33 +54,50 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
         st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
 
     results = data.get("results") or st.session_state.get("batch_all_results") or []
-    if results:
-        st.table(results)
-
     downloadable_items = data.get("downloadable_items") or st.session_state.get("batch_all_downloads") or []
-    if downloadable_items:
-        st.write("Download individual files:")
-        for item in downloadable_items:
-            saved_path = Path(item["path"])
-            row_index = item["row"]
-            display_name = item["display_name"]
-            if saved_path.exists():
-                try:
-                    file_bytes = saved_path.read_bytes()
-                except OSError as exc:
-                    st.warning(f"Could not read downloaded file for row {row_index}: {exc}")
-                    continue
-                suffix = saved_path.suffix.lower()
-                mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-                st.download_button(
-                    f"Download row {row_index}: {display_name}",
-                    data=file_bytes,
-                    file_name=saved_path.name,
-                    mime=mime,
-                    key=f"csv_download_{row_index}",
-                )
+    download_map = {item["row"]: item for item in downloadable_items or []}
+
+    if results:
+        table_container = st.container()
+        header_cols = table_container.columns([1, 3, 2, 4, 2])
+        header_cols[0].markdown("**Row**")
+        header_cols[1].markdown("**URL**")
+        header_cols[2].markdown("**Status**")
+        header_cols[3].markdown("**Detail**")
+        header_cols[4].markdown("**Download**")
+
+        for entry in results:
+            row_number = entry.get("Row", "")
+            cols = table_container.columns([1, 3, 2, 4, 2])
+            cols[0].write(row_number)
+            cols[1].write(entry.get("URL", ""))
+            cols[2].write(entry.get("Status", ""))
+            cols[3].write(entry.get("Detail", ""))
+
+            download_cell = cols[4]
+            status_lower = str(entry.get("Status", "")).strip().lower()
+            if status_lower in COMPLETED_STATUS_VALUES and row_number in download_map:
+                download_info = download_map[row_number]
+                saved_path = Path(download_info.get("path", ""))
+                display_name = download_info.get("display_name") or saved_path.name
+                if saved_path.exists():
+                    try:
+                        file_bytes = saved_path.read_bytes()
+                        suffix = saved_path.suffix.lower()
+                        mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                        download_cell.download_button(
+                            "Download",
+                            data=file_bytes,
+                            file_name=saved_path.name,
+                            mime=mime,
+                            key=f"table_download_{row_number}",
+                        )
+                    except OSError as exc:
+                        download_cell.write(f"Unavailable ({exc})")
+                else:
+                    download_cell.write("File missing")
             else:
-                st.warning(f"Downloaded file for row {row_index} not found at {saved_path}")
+                download_cell.write("—")
 
     remaining_rows = data.get("remaining_rows", 0)
     if remaining_rows:
@@ -545,7 +562,7 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
 st.title("Video Downloader")
 st.write(
-    "Download a single video from most sites. For YouTube and other gated sources, upload cookies exported from your browser."
+    "Downloads video from most sites. For YouTube and other gated sources, upload cookies exported from your browser."
 )
 
 st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
