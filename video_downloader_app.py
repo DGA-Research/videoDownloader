@@ -555,7 +555,9 @@ st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 if not FFMPEG_AVAILABLE:
     st.warning("ffmpeg not detected. Install ffmpeg to enable audio/video clipping and proper muxing.")
 
-with st.form("download_form"):
+single_download_output = st.container()
+single_download_expander = st.sidebar.expander("Single Video Download", expanded=True)
+with single_download_expander.form("download_form"):
     url = st.text_input("Video URL", placeholder="https://...")
     filename = st.text_input("Optional filename (without extension)")
     clip_start_input = st.text_input(
@@ -569,29 +571,25 @@ with st.form("download_form"):
         help="Accepts HH:MM:SS, MM:SS, or seconds. Requires ffmpeg.",
     )
 
-    with st.expander("Cookies (required for YouTube/private content)"):
-        st.markdown(
-            """
-            1. Install the [Get cookies.txt extension for Chrome/Edge](https://github.com/bugrammer/get_cookiestxt#chrome-extension) or the [Firefox add-on](https://github.com/bugrammer/get_cookiestxt#firefox-addon).
-            2. Sign in to the site in that browser tab (e.g. youtube.com).
-            3. Use the extension to export cookies for the current tab.
-            4. Upload the exported .txt file here before downloading.
-            """
-        )
-        cookies_file = st.file_uploader(
-            "Cookies file (Netscape/yt-dlp format)",
-            type=["txt", "json", "cookies"],
-            help="Upload exported browser cookies to access private, age-gated, or logged-in content.",
-        )
+    cookies_file = st.file_uploader(
+        "Cookies file (Netscape/yt-dlp format)",
+        type=["txt", "json", "cookies"],
+        help="Upload exported browser cookies to access private, age-gated, or logged-in content.",
+    )
+    st.caption(
+        "Need cookies? Install the Get cookies.txt extension, export cookies from your signed-in browser tab, "
+        "and upload the file here before downloading."
+    )
 
-    submitted = st.form_submit_button("Download")
+    submitted = st.form_submit_button("Download", use_container_width=True)
 
 if submitted:
-    if not url.strip():
-        st.error("Please enter a video URL.")
-    else:
-        clip_start_raw = clip_start_input.strip()
-        clip_end_raw = clip_end_input.strip()
+    with single_download_output:
+        if not url.strip():
+            st.error("Please enter a video URL.")
+        else:
+            clip_start_raw = clip_start_input.strip()
+            clip_end_raw = clip_end_input.strip()
         clip_start_seconds: Optional[float] = None
         clip_end_seconds: Optional[float] = None
         validation_errors = []
@@ -693,6 +691,7 @@ if submitted:
 
 st.divider()
 sidebar = st.sidebar
+sidebar.markdown("---")
 sidebar.header("Batch Inputs")
 sidebar.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
 csv_file = sidebar.file_uploader(
