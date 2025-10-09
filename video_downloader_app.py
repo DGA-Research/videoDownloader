@@ -4,7 +4,7 @@ Streamlit interface for the minimal video downloader.
 import csv
 import logging
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -190,7 +190,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         timestamp_column = context["timestamp_column"]
 
         def set_row_status(row_dict: dict, status: str, detail: str, path_value: Optional[Path] = None) -> None:
-            timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
             row_dict[status_column] = status
             row_dict[detail_column] = detail
             row_dict[path_column] = str(path_value) if path_value else ""
@@ -744,7 +744,7 @@ if st.session_state.pop("continue_requested", False):
         st.warning("No batch is currently loaded. Upload a CSV to start a new batch.")
 
 if processing_triggered:
-    st.experimental_rerun()
+    st.rerun()
 
 st.divider()
 st.write(
