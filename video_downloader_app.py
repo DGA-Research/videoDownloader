@@ -300,10 +300,20 @@ if csv_submitted:
 
                                 progress = st.progress(0)
                                 status_placeholder = st.empty()
+                                log_placeholder = st.empty()
                                 results = []
                                 downloadable_items = []
                                 total = len(rows)
                                 filename_candidates = ("File Name", "Filename", "file_name", "Name")
+
+                                def _update_placeholders(current_row: int, status_text: str) -> None:
+                                    status_placeholder.markdown(f"**Row {current_row}/{total}:** {status_text}")
+                                    log_snapshot = log_buffer.getvalue().strip().splitlines()
+                                    if log_snapshot:
+                                        recent = "\n".join(log_snapshot[-12:])
+                                        log_placeholder.text(recent)
+                                    else:
+                                        log_placeholder.text("Logs will appear here while the batch runs.")
 
                                 for index, row in enumerate(rows, start=1):
                                     url_value = (row.get(url_column) or "").strip()
@@ -313,7 +323,7 @@ if csv_submitted:
                                             {"Row": index, "URL": "", "Status": "skipped", "Detail": "Missing URL value."}
                                         )
                                         progress.progress(index / total)
-                                        status_placeholder.write(f"Processed {index}/{total}")
+                                        _update_placeholders(index, "Skipped row - missing URL value.")
                                         continue
 
                                     filename_value = None
@@ -359,7 +369,7 @@ if csv_submitted:
                                             }
                                         )
                                         progress.progress(index / total)
-                                        status_placeholder.write(f"Processed {index}/{total}")
+                                        _update_placeholders(index, "; ".join(row_errors))
                                         continue
 
                                     saved_path = download_video(
@@ -386,10 +396,16 @@ if csv_submitted:
                                             {"Row": index, "URL": url_value, "Status": "failed", "Detail": "Download failed."}
                                         )
                                     progress.progress(index / total)
-                                    status_placeholder.write(f"Processed {index}/{total}")
+                                    last_entry = results[-1]
+                                    status_message = f"{last_entry['Status'].capitalize()} – {last_entry['Detail']}"
+                                    _update_placeholders(
+                                        index,
+                                        f"{last_entry['URL']} → {status_message}",
+                                    )
 
                                 progress.empty()
                                 status_placeholder.empty()
+                                log_placeholder.empty()
                             finally:
                                 handler.flush()
                                 root_logger.removeHandler(handler)
