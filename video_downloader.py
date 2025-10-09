@@ -89,6 +89,30 @@ def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
         return None
     return numeric
 
+
+
+def _format_ffmpeg_time(seconds: float) -> str:
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds - hours * 3600 - minutes * 60
+    if abs(secs - round(secs)) < 1e-3:
+        secs_str = f"{int(round(secs)):02d}"
+    else:
+        secs_str = f"{secs:06.3f}".rstrip("0").rstrip(".")
+        if secs_str == "":
+            secs_str = "00"
+    return f"{hours:02d}:{minutes:02d}:{secs_str}"
+
+def _next_clip_path(source: Path) -> Path:
+    suffix = source.suffix or ".mp4"
+    candidate = source.with_name(f"{source.stem}_clip{suffix}")
+    counter = 1
+    while candidate.exists():
+        candidate = source.with_name(f"{source.stem}_clip_{counter}{source.suffix}")
+        counter += 1
+    return candidate
+
+
 def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> Optional[Path]:
     if not FFMPEG_AVAILABLE:
         LOGGER.error("Clipping requested but ffmpeg is not available.")
@@ -317,6 +341,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 
