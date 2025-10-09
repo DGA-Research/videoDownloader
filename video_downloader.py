@@ -58,6 +58,37 @@ def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=resolved, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
     LOGGER.setLevel(resolved)
 
+def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
+    """Parse a human-friendly time string (e.g. 1:23:45) into seconds."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric < 0:
+            return None
+        return numeric
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        parsed = yt_dlp.utils.parse_duration(text)
+    except Exception:  # pragma: no cover - defensive
+        parsed = None
+
+    if parsed is not None:
+        return float(parsed)
+
+    try:
+        numeric = float(text)
+    except ValueError:
+        return None
+    if numeric < 0:
+        return None
+    return numeric
+
 
 def download_video(
     url: str,
@@ -188,3 +219,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
