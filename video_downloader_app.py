@@ -33,7 +33,7 @@ MIME_BY_SUFFIX = {
 
 
 
-def _display_batch_results(data: dict) -> None:
+def _display_batch_results(data: dict, controls_container=None) -> None:
     if not data:
         return
 
@@ -92,7 +92,8 @@ def _display_batch_results(data: dict) -> None:
         default_limit = max(1, min(default_limit, remaining_rows))
 
         skip_completed_default = data.get("skip_completed_default", True)
-        continue_controls = st.sidebar.container()
+        container_target = controls_container or st.sidebar
+        continue_controls = container_target.container()
         continue_controls.subheader("Continue Batch")
         next_chunk = continue_controls.number_input(
             "Rows to process next",
@@ -371,7 +372,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             progress.empty()
         if pause_triggered:
             status_placeholder.info(
-                f"Batch paused after {pause_limit} row(s). Use the continue controls below to process more rows."
+                f"Batch paused after {pause_limit} row(s). Use the sidebar continue controls to process more rows."
             )
             log_placeholder.text(log_buffer.getvalue().strip())
         else:
@@ -590,141 +591,141 @@ if submitted:
         else:
             clip_start_raw = clip_start_input.strip()
             clip_end_raw = clip_end_input.strip()
-        clip_start_seconds: Optional[float] = None
-        clip_end_seconds: Optional[float] = None
-        validation_errors = []
+            clip_start_seconds: Optional[float] = None
+            clip_end_seconds: Optional[float] = None
+            validation_errors = []
 
-        if clip_start_raw:
-            clip_start_seconds = parse_time_to_seconds(clip_start_raw)
-            if clip_start_seconds is None:
-                validation_errors.append("Clip start time must be in HH:MM:SS or seconds format.")
-        if clip_end_raw:
-            clip_end_seconds = parse_time_to_seconds(clip_end_raw)
-            if clip_end_seconds is None:
-                validation_errors.append("Clip end time must be in HH:MM:SS or seconds format.")
-        if (
-            clip_start_seconds is not None
-            and clip_end_seconds is not None
-            and clip_end_seconds <= clip_start_seconds
-        ):
-            validation_errors.append("Clip end time must be greater than clip start time.")
-        if (clip_start_seconds is not None or clip_end_seconds is not None) and not FFMPEG_AVAILABLE:
-            validation_errors.append("Clipping requires ffmpeg, which was not detected.")
+            if clip_start_raw:
+                clip_start_seconds = parse_time_to_seconds(clip_start_raw)
+                if clip_start_seconds is None:
+                    validation_errors.append("Clip start time must be in HH:MM:SS or seconds format.")
+            if clip_end_raw:
+                clip_end_seconds = parse_time_to_seconds(clip_end_raw)
+                if clip_end_seconds is None:
+                    validation_errors.append("Clip end time must be in HH:MM:SS or seconds format.")
+            if (
+                clip_start_seconds is not None
+                and clip_end_seconds is not None
+                and clip_end_seconds <= clip_start_seconds
+            ):
+                validation_errors.append("Clip end time must be greater than clip start time.")
+            if (clip_start_seconds is not None or clip_end_seconds is not None) and not FFMPEG_AVAILABLE:
+                validation_errors.append("Clipping requires ffmpeg, which was not detected.")
 
-        if validation_errors:
-            for message in validation_errors:
-                st.error(message)
-        else:
-            LOGGER.setLevel(logging.INFO)
+            if validation_errors:
+                for message in validation_errors:
+                    st.error(message)
+            else:
+                LOGGER.setLevel(logging.INFO)
 
-            log_buffer = StringIO()
-            handler = logging.StreamHandler(log_buffer)
-            handler.setLevel(logging.INFO)
-            handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+                log_buffer = StringIO()
+                handler = logging.StreamHandler(log_buffer)
+                handler.setLevel(logging.INFO)
+                handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
 
-            root_logger = logging.getLogger()
-            previous_root_level = root_logger.level
-            root_logger.addHandler(handler)
-            root_logger.setLevel(logging.INFO)
+                root_logger = logging.getLogger()
+                previous_root_level = root_logger.level
+                root_logger.addHandler(handler)
+                root_logger.setLevel(logging.INFO)
 
-            yt_logger = logging.getLogger("yt_dlp")
-            previous_yt_level = yt_logger.level
-            yt_logger.setLevel(logging.INFO)
+                yt_logger = logging.getLogger("yt_dlp")
+                previous_yt_level = yt_logger.level
+                yt_logger.setLevel(logging.INFO)
 
-            output_dir = DEFAULT_OUTPUT_DIR
-            result = None
-            temp_cookie_path: Optional[Path] = None
-            try:
-                if cookies_file is not None:
-                    suffix = Path(cookies_file.name).suffix or ".txt"
-                    with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                        tmp.write(cookies_file.getbuffer())
-                        temp_cookie_path = Path(tmp.name)
+                output_dir = DEFAULT_OUTPUT_DIR
+                result = None
+                temp_cookie_path: Optional[Path] = None
+                try:
+                    if cookies_file is not None:
+                        suffix = Path(cookies_file.name).suffix or ".txt"
+                        with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(cookies_file.getbuffer())
+                            temp_cookie_path = Path(tmp.name)
 
-                with st.spinner("Downloading video..."):
-                    result = download_video(
-                        url.strip(),
-                        output_dir,
-                        filename.strip() or None,
-                        temp_cookie_path,
-                        clip_start=clip_start_seconds,
-                        clip_end=clip_end_seconds,
+                    with st.spinner("Downloading video..."):
+                        result = download_video(
+                            url.strip(),
+                            output_dir,
+                            filename.strip() or None,
+                            temp_cookie_path,
+                            clip_start=clip_start_seconds,
+                            clip_end=clip_end_seconds,
+                        )
+                finally:
+                    handler.flush()
+                    root_logger.removeHandler(handler)
+                    root_logger.setLevel(previous_root_level)
+                    yt_logger.setLevel(previous_yt_level)
+                    if temp_cookie_path and temp_cookie_path.exists():
+                        try:
+                            temp_cookie_path.unlink()
+                        except OSError:
+                            LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
+
+                log_output = log_buffer.getvalue().strip()
+                if result:
+                    result_path = Path(result)
+                    st.success(f"Saved to {result_path}")
+                    st.caption(
+                        "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
                     )
-            finally:
-                handler.flush()
-                root_logger.removeHandler(handler)
-                root_logger.setLevel(previous_root_level)
-                yt_logger.setLevel(previous_yt_level)
-                if temp_cookie_path and temp_cookie_path.exists():
-                    try:
-                        temp_cookie_path.unlink()
-                    except OSError:
-                        LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
 
-            log_output = log_buffer.getvalue().strip()
-            if result:
-                result_path = Path(result)
-                st.success(f"Saved to {result_path}")
-                st.caption(
-                    "The file path above is relative to where Streamlit is running. Files save under 'downloads/'."
-                )
-
-                file_bytes = result_path.read_bytes() if result_path.exists() else None
-                if file_bytes:
-                    suffix = result_path.suffix.lower()
-                    mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-                    st.download_button(
-                        "Download video",
-                        data=file_bytes,
-                        file_name=result_path.name,
-                        mime=mime,
-                    )
+                    file_bytes = result_path.read_bytes() if result_path.exists() else None
+                    if file_bytes:
+                        suffix = result_path.suffix.lower()
+                        mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                        st.download_button(
+                            "Download video",
+                            data=file_bytes,
+                            file_name=result_path.name,
+                            mime=mime,
+                        )
+                    else:
+                        st.warning("Downloaded file could not be read for download.")
                 else:
-                    st.warning("Downloaded file could not be read for download.")
-            else:
-                st.error("Download failed. Check the logs for more details.")
+                    st.error("Download failed. Check the logs for more details.")
 
-            if log_output:
-                st.text_area("Logs", log_output, height=240)
-            else:
-                st.caption("No log output captured for this run.")
+                if log_output:
+                    st.text_area("Logs", log_output, height=240)
+                else:
+                    st.caption("No log output captured for this run.")
 
 st.divider()
-sidebar = st.sidebar
-sidebar.markdown("---")
-sidebar.header("Batch Inputs")
-sidebar.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
-csv_file = sidebar.file_uploader(
-    "CSV file with URLs",
-    type=["csv"],
-    help="Upload a CSV containing a column named URL, Link, or Links.",
-)
-batch_cookies_file = sidebar.file_uploader(
-    "Cookies file for all rows (optional)",
-    type=["txt", "json", "cookies"],
-    help="Upload cookies to use for every URL in the CSV batch.",
-    key="csv_cookies",
-)
-pause_after_sidebar = sidebar.number_input(
-    "Process rows then pause (0 = run all)",
-    min_value=0,
-    value=0,
-    step=1,
-    help="Set to a positive number to stop after that many rows so you can download results before continuing.",
-)
-skip_completed = sidebar.checkbox(
-    "Skip rows already marked as downloaded in the CSV",
-    value=True,
-    help="When enabled, rows whose download status column already indicates success are not processed again.",
-)
-csv_submitted = sidebar.button("Download URLs from CSV")
-sidebar.info(
-    "Batch downloads rely on yt-dlp. Sites that require authentication generally need cookies supplied above."
-)
+st.sidebar.markdown("---")
+batch_download_expander = st.sidebar.expander("Batch Downloads", expanded=True)
+with batch_download_expander:
+    st.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
+    csv_file = st.file_uploader(
+        "CSV file with URLs",
+        type=["csv"],
+        help="Upload a CSV containing a column named URL, Link, or Links.",
+    )
+    batch_cookies_file = st.file_uploader(
+        "Cookies file for all rows (optional)",
+        type=["txt", "json", "cookies"],
+        help="Upload cookies to use for every URL in the CSV batch.",
+        key="csv_cookies",
+    )
+    pause_after_sidebar = st.number_input(
+        "Process rows then pause (0 = run all)",
+        min_value=0,
+        value=0,
+        step=1,
+        help="Set to a positive number to stop after that many rows so you can download results before continuing.",
+    )
+    skip_completed = st.checkbox(
+        "Skip rows already marked as downloaded in the CSV",
+        value=True,
+        help="When enabled, rows whose download status column already indicates success are not processed again.",
+    )
+    csv_submitted = st.button("Download URLs from CSV")
+    st.info(
+        "Batch downloads rely on yt-dlp. Sites that require authentication generally need cookies supplied above."
+    )
 
 batch_results = st.session_state.get("batch_results")
 if batch_results:
-    _display_batch_results(batch_results)
+    _display_batch_results(batch_results, batch_download_expander)
 
 processing_triggered = False
 pause_after = int(pause_after_sidebar)
