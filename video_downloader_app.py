@@ -13,7 +13,14 @@ from typing import List, Optional, Tuple
 import streamlit as st
 import html
 
-from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, LOGGER, download_video, parse_time_to_seconds
+from video_downloader import (
+    FFMPEG_AVAILABLE,
+    FFMPEG_PATH,
+    LOGGER,
+    download_video,
+    parse_time_to_seconds,
+    yt_dlp_version_status,
+)
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%H:%M:%S"
@@ -649,6 +656,13 @@ st.title("Video Downloader")
 st.write(
     "Downloads video from most sites. For YouTube and other gated sources, upload cookies exported from your browser."
 )
+current_yt_dlp, minimum_yt_dlp, yt_dlp_outdated = yt_dlp_version_status()
+if yt_dlp_outdated:
+    displayed_version = current_yt_dlp or "unknown"
+    st.warning(
+        f"yt-dlp {displayed_version} detected. Upgrade to {minimum_yt_dlp} or newer with "
+        "`pip install --upgrade yt-dlp` to avoid recent YouTube download restrictions."
+    )
 
 st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 if not FFMPEG_AVAILABLE:
@@ -972,7 +986,6 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
-
 
 
 
