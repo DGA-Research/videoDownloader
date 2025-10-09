@@ -131,13 +131,7 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
             mime="application/zip",
             key="batch_clips_zip",
         )
-        controls_container.download_button(
-            "Download all clips (.zip)",
-            data=zip_bytes,
-            file_name=data.get("zip_filename") or "clips.zip",
-            mime="application/zip",
-            key="batch_clips_zip_secondary",
-        )
+
 
 
 def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Optional[dict]:
@@ -710,6 +704,10 @@ with batch_download_expander:
         help="Upload cookies to use for every URL in the CSV batch.",
         key="csv_cookies",
     )
+    st.caption(
+        "Need cookies? Install the Get cookies.txt extension, export cookies from your signed-in browser tab, "
+        "and upload the file here before downloading."
+    )
     if "batch_pause_after" not in st.session_state:
         st.session_state["batch_pause_after"] = 0
     if batch_locked:
@@ -729,13 +727,12 @@ with batch_download_expander:
         help="When enabled, rows whose download status column already indicates success are not processed again.",
         key="batch_skip_completed_toggle",
     )
+
     if batch_locked:
         csv_submitted = False
     else:
         csv_submitted = st.button("Download URLs from CSV", use_container_width=True)
-    st.info(
-        "Batch downloads rely on yt-dlp. Sites that require authentication generally need cookies supplied above."
-    )
+
 
 batch_results = st.session_state.get("batch_results")
 if batch_results:
