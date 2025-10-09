@@ -688,8 +688,6 @@ if submitted:
                 st.caption("No log output captured for this run.")
 
 st.divider()
-st.header("Batch Download from CSV")
-
 sidebar = st.sidebar
 sidebar.header("Batch Inputs")
 sidebar.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
@@ -711,27 +709,22 @@ pause_after_sidebar = sidebar.number_input(
     step=1,
     help="Set to a positive number to stop after that many rows so you can download results before continuing.",
 )
+skip_completed = sidebar.checkbox(
+    "Skip rows already marked as downloaded in the CSV",
+    value=True,
+    help="When enabled, rows whose download status column already indicates success are not processed again.",
+)
+csv_submitted = sidebar.button("Download URLs from CSV")
+sidebar.info(
+    "Batch downloads rely on yt-dlp. Sites that require authentication generally need cookies supplied above."
+)
 
 batch_results = st.session_state.get("batch_results")
 if batch_results:
     _display_batch_results(batch_results)
 
 processing_triggered = False
-
-with st.form("csv_download_form"):
-    pause_after = st.number_input(
-        "Process rows then pause (from sidebar)",
-        min_value=0,
-        value=int(pause_after_sidebar),
-        step=1,
-        help="Value provided via sidebar controls.",
-    )
-    skip_completed = st.checkbox(
-        "Skip rows already marked as downloaded in the CSV",
-        value=True,
-        help="When enabled, rows whose download status column already indicates success are not processed again.",
-    )
-    csv_submitted = st.form_submit_button("Download URLs from CSV")
+pause_after = int(pause_after_sidebar)
 
 if csv_submitted:
     if not csv_file:
@@ -840,10 +833,4 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
-
-st.divider()
-st.write(
-    "This downloader relies on yt-dlp, so any site supported by yt-dlp should work, "
-    "provided the content is publicly accessible and not blocked by the host."
-)
 
