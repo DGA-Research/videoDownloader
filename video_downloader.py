@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
 
 try:
     import yt_dlp
@@ -19,6 +20,10 @@ LOGGER.addHandler(logging.NullHandler())  # Avoid "No handler" warnings when lib
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _LOG_DATEFMT = "%H:%M:%S"
+_YOUTUBE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+)
 
 
 def _locate_ffmpeg() -> Tuple[Optional[Path], bool]:
@@ -59,7 +64,6 @@ def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=resolved, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
     LOGGER.setLevel(resolved)
 
-
 def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
     """Parse a human-friendly time string (e.g. 1:23:45) into seconds."""
     if value is None:
@@ -92,6 +96,7 @@ def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
     return numeric
 
 
+
 def _format_ffmpeg_time(seconds: float) -> str:
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -103,7 +108,6 @@ def _format_ffmpeg_time(seconds: float) -> str:
         if secs_str == "":
             secs_str = "00"
     return f"{hours:02d}:{minutes:02d}:{secs_str}"
-
 
 def _next_clip_path(source: Path) -> Path:
     suffix = source.suffix or ".mp4"
@@ -164,6 +168,123 @@ def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> O
     return source
 
 
+
+def _sanitize_opts_for_log(options: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of yt-dlp options safe for logging."""
+    sanitized = dict(options)
+    if "password" in sanitized:
+        sanitized["password"] = "***"
+    return sanitized
+
+
+def _build_ydl_options(
+    template: str,
+    use_ffmpeg: bool,
+    cookies_path: Optional[Path],
+    username: Optional[str],
+    password: Optional[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Construct yt-dlp options based on the environment and request."""
+    base_opts: Dict[str, Any] = {
+        "outtmpl": template,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 3,
+        "fragment_retries": 3,
+        "overwrites": True,
+        "http_headers": {"User-Agent": _YOUTUBE_USER_AGENT},
+    }
+
+    if use_ffmpeg:
+        LOGGER.debug("Configuring yt-dlp with ffmpeg merge support.")
+        base_opts["format"] = "bv*+ba/b"
+        base_opts["merge_output_format"] = "mp4"
+        ffmpeg_location = _ffmpeg_location_arg()
+        if ffmpeg_location:
+            LOGGER.debug("Providing ffmpeg location %s to yt-dlp", ffmpeg_location)
+            base_opts["ffmpeg_location"] = ffmpeg_location
+    else:
+        base_opts["format"] = "best"
+
+    if cookies_path:
+        base_opts["cookiefile"] = str(cookies_path)
+    if username:
+        base_opts["username"] = username
+        if password:
+            base_opts["password"] = password
+    if extra:
+        base_opts.update(extra)
+    return base_opts
+
+
+def _determine_output_path(info: Dict[str, Any], ydl: "yt_dlp.YoutubeDL") -> Path:
+    """Resolve the final output path reported by yt-dlp."""
+    final_name = info.get("_filename")
+    if final_name:
+        candidate = Path(final_name)
+        if candidate.exists():
+            return candidate
+
+    requested = info.get("requested_downloads") or []
+    for request in requested:
+        filepath = request.get("filepath")
+        if filepath:
+            candidate_path = Path(filepath)
+            if candidate_path.exists():
+                return candidate_path
+
+    candidate = Path(ydl.prepare_filename(info))
+    ext = info.get("ext")
+    if ext:
+        candidate = candidate.with_suffix(f".{ext}")
+    return candidate
+
+
+def _download_with_opts(
+    url: str,
+    ydl_opts: Dict[str, Any],
+    clip_start_seconds: Optional[float],
+    clip_end_seconds: Optional[float],
+) -> Optional[Path]:
+    """Execute yt-dlp download and optional clipping with provided options."""
+    sanitized_opts = _sanitize_opts_for_log(ydl_opts)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        LOGGER.debug("Executing yt-dlp with options: %s", sanitized_opts)
+        info = ydl.extract_info(url, download=True)
+        file_path = _determine_output_path(info, ydl)
+        LOGGER.debug("Resolved file path %s from yt-dlp metadata", file_path)
+
+    LOGGER.info("Downloaded %s -> %s", url, file_path)
+
+    if clip_start_seconds is not None or clip_end_seconds is not None:
+        LOGGER.info(
+            "Clipping downloaded file %s (start=%s, end=%s)",
+            file_path,
+            clip_start_seconds,
+            clip_end_seconds,
+        )
+        clipped_path = _clip_media(file_path, clip_start_seconds, clip_end_seconds)
+        if clipped_path is None:
+            LOGGER.error("Clipping failed; keeping original download but reporting failure.")
+            return None
+        file_path = clipped_path
+
+    return file_path
+
+
+def _log_download_error(url: str, err: yt_dlp.utils.DownloadError) -> None:
+    """Log download errors with additional ffmpeg guidance when relevant."""
+    message = str(err)
+    LOGGER.error("Video download failed for %s: %s", url, message)
+    if "ffmpeg" in message.lower() and FFMPEG_AVAILABLE:
+        LOGGER.warning(
+            "ffmpeg was expected at %s but yt-dlp reported it missing. Check that the binary is executable.",
+            FFMPEG_PATH,
+        )
+
+
 def download_video(
     url: str,
     output_dir: Path,
@@ -184,153 +305,108 @@ def download_video(
         LOGGER.error("Unable to create output directory %s: %s", output_dir, exc)
         return None
 
-    template_filename: Optional[str] = None
-    if filename:
-        trimmed = filename.strip()
-        if trimmed:
-            candidate = Path(trimmed)
-            if candidate.suffix:
-                template_filename = trimmed
-            else:
-                template_filename = f"{trimmed}.%(ext)s"
-    template = str(output_dir / (template_filename or "%(title)s.%(ext)s"))
+    template = str(output_dir / (filename or "%(title)s.%(ext)s"))
     LOGGER.debug("Using output template %s", template)
 
-    if FFMPEG_AVAILABLE:
-        LOGGER.debug("Configuring yt-dlp with ffmpeg merge support.")
-        ydl_opts = {
-            "outtmpl": template,
-            "format": "bv*+ba/b",
-            "merge_output_format": "mp4",
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-        }
-        ffmpeg_location = _ffmpeg_location_arg()
-        if ffmpeg_location:
-            LOGGER.debug("Providing ffmpeg location %s to yt-dlp", ffmpeg_location)
-            ydl_opts["ffmpeg_location"] = ffmpeg_location
-    else:
-        LOGGER.warning(
-            "ffmpeg not detected; falling back to best available single-file download without merging audio/video."
-        )
-        ydl_opts = {
-            "outtmpl": template,
-            "format": "best",
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-        }
-
+    resolved_cookies_path: Optional[Path] = None
     if cookies_path:
-        cookies_path = Path(cookies_path)
-        if cookies_path.exists():
-            ydl_opts["cookiefile"] = str(cookies_path)
-            LOGGER.info("Using cookies file at %s", cookies_path)
+        candidate = Path(cookies_path)
+        if candidate.exists():
+            resolved_cookies_path = candidate
+            LOGGER.info("Using cookies file at %s", candidate)
         else:
-            LOGGER.warning("Cookies path %s does not exist; continuing without cookies.", cookies_path)
+            LOGGER.warning("Cookies path %s does not exist; continuing without cookies.", candidate)
 
-    if username:
-        ydl_opts["username"] = username
+    auth_username = username
+    auth_password: Optional[str] = None
+    if auth_username:
         LOGGER.info("Using provided username for authentication.")
         if password:
-            ydl_opts["password"] = password
+            auth_password = password
         else:
             LOGGER.warning("Username provided without password; yt-dlp may prompt for additional credentials.")
     elif password:
         LOGGER.warning("Password provided without username; ignoring password.")
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            LOGGER.debug("Executing yt-dlp with options: %s", ydl_opts)
-            clip_start_seconds: Optional[float] = None
-            clip_end_seconds: Optional[float] = None
+    clip_start_seconds: Optional[float] = None
+    clip_end_seconds: Optional[float] = None
 
-            if clip_start is not None:
-                try:
-                    clip_start_seconds = float(clip_start)
-                except (TypeError, ValueError):
-                    LOGGER.error("Invalid clip start value %s; must be numeric seconds.", clip_start)
-                    return None
-                if clip_start_seconds < 0:
-                    LOGGER.error("Clip start time must be zero or positive.")
-                    return None
+    if clip_start is not None:
+        try:
+            clip_start_seconds = float(clip_start)
+        except (TypeError, ValueError):
+            LOGGER.error("Invalid clip start value %s; must be numeric seconds.", clip_start)
+            return None
+        if clip_start_seconds < 0:
+            LOGGER.error("Clip start time must be zero or positive.")
+            return None
 
-            if clip_end is not None:
-                try:
-                    clip_end_seconds = float(clip_end)
-                except (TypeError, ValueError):
-                    LOGGER.error("Invalid clip end value %s; must be numeric seconds.", clip_end)
-                    return None
-                if clip_end_seconds <= 0:
-                    LOGGER.error("Clip end time must be greater than zero.")
-                    return None
+    if clip_end is not None:
+        try:
+            clip_end_seconds = float(clip_end)
+        except (TypeError, ValueError):
+            LOGGER.error("Invalid clip end value %s; must be numeric seconds.", clip_end)
+            return None
+        if clip_end_seconds <= 0:
+            LOGGER.error("Clip end time must be greater than zero.")
+            return None
 
-            if (
-                clip_start_seconds is not None
-                and clip_end_seconds is not None
-                and clip_end_seconds <= clip_start_seconds
-            ):
-                LOGGER.error("Clip end time must be greater than clip start time.")
-                return None
+    if (
+        clip_start_seconds is not None
+        and clip_end_seconds is not None
+        and clip_end_seconds <= clip_start_seconds
+    ):
+        LOGGER.error("Clip end time must be greater than clip start time.")
+        return None
 
-            info = ydl.extract_info(url, download=True)
-            requested = info.get("requested_downloads")
-            if requested:
-                file_path = Path(requested[0]["filepath"])
-                LOGGER.debug("yt-dlp reported requested download path %s", file_path)
-            else:
-                file_path = Path(ydl.prepare_filename(info))
-                ext = info.get("ext")
-                if ext:
-                    file_path = file_path.with_suffix(f".{ext}")
-                LOGGER.debug("Derived file path %s using metadata", file_path)
-            if file_path.suffix == "":
-                info_ext = info.get("ext")
-                if info_ext:
-                    info_ext = info_ext.lstrip(".")
-                inferred_ext = None
-                if requested and requested[0].get("ext"):
-                    inferred_ext = requested[0]["ext"].lstrip(".")
-                elif info_ext:
-                    inferred_ext = info_ext
-                if inferred_ext:
-                    target_with_ext = file_path.with_suffix(f".{inferred_ext}")
-                    try:
-                        file_path.rename(target_with_ext)
-                        file_path = target_with_ext
-                        LOGGER.debug("Renamed download to include extension: %s", file_path)
-                    except OSError as exc:
-                        LOGGER.warning("Failed to rename %s with extension %s: %s", file_path, inferred_ext, exc)
-                else:
-                    LOGGER.warning("Downloaded file %s has no extension and one could not be inferred.", file_path)
+    if not FFMPEG_AVAILABLE:
+        LOGGER.warning(
+            "ffmpeg not detected; falling back to best available single-file download without merging audio/video."
+        )
 
-            LOGGER.info("Downloaded %s -> %s", url, file_path)
+    attempt_configs = [
+        ("initial", None),
+        ("ipv4", {"force_ipv4": True, "http_chunk_size": 1_048_576, "retries": 5, "fragment_retries": 5}),
+    ]
 
-            if clip_start_seconds is not None or clip_end_seconds is not None:
-                LOGGER.info(
-                    "Clipping downloaded file %s (start=%s, end=%s)",
-                    file_path,
-                    clip_start_seconds,
-                    clip_end_seconds,
-                )
-                clipped_path = _clip_media(file_path, clip_start_seconds, clip_end_seconds)
-                if clipped_path is None:
-                    LOGGER.error("Clipping failed; keeping original download but reporting failure.")
-                    return None
-                file_path = clipped_path
-
-            return file_path
-    except yt_dlp.utils.DownloadError as err:
-        message = str(err)
-        LOGGER.error("Video download failed for %s: %s", url, message)
-        if "ffmpeg" in message.lower() and FFMPEG_AVAILABLE:
-            LOGGER.warning(
-                "ffmpeg was expected at %s but yt-dlp reported it missing. Check that the binary is executable.",
-                FFMPEG_PATH,
+    last_error: Optional[yt_dlp.utils.DownloadError] = None
+    for index, (label, extra_opts) in enumerate(attempt_configs):
+        if index > 0:
+            if not (last_error and "downloaded file is empty" in str(last_error).lower()):
+                break
+            LOGGER.info(
+                "Retrying download for %s forcing IPv4 and chunked transfers after empty file error.",
+                url,
             )
-    except Exception:  # pragma: no cover - defensive
-        LOGGER.exception("Unexpected error during video download for %s", url)
+
+        ydl_opts = _build_ydl_options(
+            template,
+            FFMPEG_AVAILABLE,
+            resolved_cookies_path,
+            auth_username,
+            auth_password,
+            extra_opts,
+        )
+
+        try:
+            return _download_with_opts(url, ydl_opts, clip_start_seconds, clip_end_seconds)
+        except yt_dlp.utils.DownloadError as err:
+            last_error = err
+            message_lower = str(err).lower()
+            if index == 0 and "downloaded file is empty" in message_lower:
+                LOGGER.warning(
+                    "Initial download attempt for %s resulted in an empty file. Retrying with IPv4 fallback.",
+                    url,
+                )
+                continue
+            _log_download_error(url, err)
+            return None
+        except Exception:  # pragma: no cover - defensive
+            LOGGER.exception("Unexpected error during video download for %s", url)
+            return None
+
+    if last_error:
+        _log_download_error(url, last_error)
     return None
 
 
@@ -369,3 +445,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+
