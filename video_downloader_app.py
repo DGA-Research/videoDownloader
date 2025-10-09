@@ -84,12 +84,17 @@ def _display_batch_results(data: dict) -> None:
 
     remaining_rows = data.get("remaining_rows", 0)
     if remaining_rows:
-        st.info(f"{remaining_rows} row(s) remain unprocessed in this batch.")
+        st.info(
+            f"{remaining_rows} row(s) remain unprocessed in this batch. Use the sidebar controls to continue processing."
+        )
         default_limit = data.get("default_pause_limit") or remaining_rows
         default_limit = int(default_limit) if default_limit else remaining_rows
         default_limit = max(1, min(default_limit, remaining_rows))
 
-        next_chunk = st.number_input(
+        skip_completed_default = data.get("skip_completed_default", True)
+        continue_controls = st.sidebar.container()
+        continue_controls.subheader("Continue Batch")
+        next_chunk = continue_controls.number_input(
             "Rows to process next",
             min_value=1,
             max_value=int(remaining_rows),
@@ -97,13 +102,12 @@ def _display_batch_results(data: dict) -> None:
             step=1,
             key="batch_continue_chunk_size",
         )
-        skip_completed_default = data.get("skip_completed_default", True)
-        next_skip_completed = st.checkbox(
+        next_skip_completed = continue_controls.checkbox(
             "Skip rows already marked as downloaded",
             value=bool(skip_completed_default),
             key="batch_continue_skip_completed",
         )
-        if st.button("Continue batch", key="batch_continue_button"):
+        if continue_controls.button("Continue batch", key="batch_continue_button"):
             st.session_state["continue_requested"] = True
             st.session_state["continue_chunk_size"] = int(next_chunk)
             st.session_state["continue_skip_completed"] = bool(next_skip_completed)
