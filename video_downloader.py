@@ -24,6 +24,7 @@ _YOUTUBE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
 )
+_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=android,web"
 
 
 def _locate_ffmpeg() -> Tuple[Optional[Path], bool]:
@@ -230,6 +231,8 @@ def _build_cli_command(
             "--force-overwrites",
             "--user-agent",
             _YOUTUBE_USER_AGENT,
+            "--extractor-args",
+            _YOUTUBE_EXTRACTOR_ARGS,
             "-o",
             template,
             "--print",
