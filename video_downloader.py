@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 
 try:
     import yt_dlp
+    LOGGER.info("yt-dlp Python package version: %s", getattr(yt_dlp, "__version__", "unknown"))
 except ImportError:
     print("ERROR: 'yt-dlp' library not found. Install with: pip install yt-dlp", file=sys.stderr)
     sys.exit(1)
@@ -376,3 +377,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
