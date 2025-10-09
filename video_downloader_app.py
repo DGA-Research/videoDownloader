@@ -704,6 +704,13 @@ batch_cookies_file = sidebar.file_uploader(
     help="Upload cookies to use for every URL in the CSV batch.",
     key="csv_cookies",
 )
+pause_after_sidebar = sidebar.number_input(
+    "Process rows then pause (0 = run all)",
+    min_value=0,
+    value=0,
+    step=1,
+    help="Set to a positive number to stop after that many rows so you can download results before continuing.",
+)
 
 batch_results = st.session_state.get("batch_results")
 if batch_results:
@@ -713,11 +720,11 @@ processing_triggered = False
 
 with st.form("csv_download_form"):
     pause_after = st.number_input(
-        "Process rows then pause (0 = run all)",
+        "Process rows then pause (from sidebar)",
         min_value=0,
-        value=0,
+        value=int(pause_after_sidebar),
         step=1,
-        help="Set to a positive number to stop after that many rows so you can download results before continuing.",
+        help="Value provided via sidebar controls.",
     )
     skip_completed = st.checkbox(
         "Skip rows already marked as downloaded in the CSV",
