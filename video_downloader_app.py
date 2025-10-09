@@ -695,6 +695,8 @@ st.sidebar.markdown("---")
 batch_download_expander = st.sidebar.expander("Batch Downloads", expanded=True)
 with batch_download_expander:
     st.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
+    batch_context = st.session_state.get("batch_context")
+    batch_locked = bool(batch_context and batch_context.get("next_row", 0) > 0)
     csv_file = st.file_uploader(
         "CSV file with URLs",
         type=["csv"],
@@ -706,19 +708,29 @@ with batch_download_expander:
         help="Upload cookies to use for every URL in the CSV batch.",
         key="csv_cookies",
     )
-    pause_after_sidebar = st.number_input(
-        "Process rows then pause (0 = run all)",
-        min_value=0,
-        value=0,
-        step=1,
-        help="Set to a positive number to stop after that many rows so you can download results before continuing.",
-    )
+    if "batch_pause_after" not in st.session_state:
+        st.session_state["batch_pause_after"] = 0
+    if batch_locked:
+        pause_after_sidebar = int(st.session_state.get("batch_pause_after", 0))
+        st.caption("Pause and resume controls are available while the current batch is paused.")
+    else:
+        pause_after_sidebar = st.number_input(
+            "Process rows then pause (0 = run all)",
+            min_value=0,
+            value=int(st.session_state.get("batch_pause_after", 0)),
+            step=1,
+            help="Set to a positive number to stop after that many rows so you can download results before continuing.",
+            key="batch_pause_after",
+        )
     skip_completed = st.checkbox(
         "Skip rows already marked as downloaded in the CSV",
         value=True,
         help="When enabled, rows whose download status column already indicates success are not processed again.",
     )
-    csv_submitted = st.button("Download URLs from CSV")
+    if batch_locked:
+        csv_submitted = False
+    else:
+        csv_submitted = st.button("Download URLs from CSV", use_container_width=True)
     st.info(
         "Batch downloads rely on yt-dlp. Sites that require authentication generally need cookies supplied above."
     )
