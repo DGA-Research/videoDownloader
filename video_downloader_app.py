@@ -37,21 +37,14 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     if not data:
         return
 
-    paused_after = data.get("paused_after") or 0
-    if paused_after:
-        st.info(f"Batch processing paused after {paused_after} row(s) per user setting.")
-
     summary_counts = data.get("summary_counts") or st.session_state.get("batch_summary_counts") or {}
     success_count = summary_counts.get("success", data.get("success_count", 0))
     failure_count = summary_counts.get("failure", data.get("failure_count", 0))
     skipped_count = summary_counts.get("skipped", data.get("skipped_count", 0))
 
-    if success_count:
-        st.success(f"Downloaded {success_count} item(s) from the CSV.")
-    if failure_count:
-        st.error(f"{failure_count} download(s) failed. Check the logs for details.")
-    if skipped_count:
-        st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
+    st.markdown(
+        f"✅ Downloads: {success_count} | ❌ Failures: {failure_count} | ⚪ Skipped: {skipped_count}"
+    )
 
     results = data.get("results") or st.session_state.get("batch_all_results") or []
     downloadable_items = data.get("downloadable_items") or st.session_state.get("batch_all_downloads") or []
@@ -98,6 +91,16 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
                     download_cell.write("File missing")
             else:
                 download_cell.write("—")
+
+    paused_after = data.get("paused_after") or 0
+    if paused_after:
+        st.info(f"Batch processing paused after {paused_after} row(s) per user setting.")
+    if success_count:
+        st.success(f"Downloaded {success_count} item(s) from the CSV.")
+    if failure_count:
+        st.error(f"{failure_count} download(s) failed. Check the logs for details.")
+    if skipped_count:
+        st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
 
     remaining_rows = data.get("remaining_rows", 0)
     if remaining_rows:
