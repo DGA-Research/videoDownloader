@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 try:
@@ -24,8 +24,6 @@ _YOUTUBE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
 )
-_YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=android,web"
-
 
 def _locate_ffmpeg() -> Tuple[Optional[Path], bool]:
     """Find ffmpeg either on PATH or via imageio-ffmpeg."""
@@ -57,23 +55,6 @@ def _ffmpeg_location_arg() -> Optional[str]:
     if not FFMPEG_PATH:
         return None
     return str(FFMPEG_PATH)
-
-
-def _locate_yt_dlp_executable() -> Optional[str]:
-    """Locate the yt-dlp executable for CLI usage."""
-    try:
-        exec_path = yt_dlp.utils.exe_path()
-    except AttributeError:
-        exec_path = None
-    if exec_path:
-        return exec_path
-    binary = shutil.which("yt-dlp")
-    if binary:
-        return binary
-    return None
-
-
-YT_DLP_EXECUTABLE = _locate_yt_dlp_executable()
 
 
 def configure_logging(level: str = "INFO") -> None:
@@ -187,139 +168,97 @@ def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> O
 
 
 
-def _sanitize_cli_args(args: List[str]) -> List[str]:
-    """Mask sensitive values for logging CLI invocations."""
-    sanitized: List[str] = []
-    mask_next = False
-    for item in args:
-        if mask_next:
-            sanitized.append("***")
-            mask_next = False
-            continue
-        sanitized.append(item)
-        if item in {"--password"}:
-            mask_next = True
+def _sanitize_opts_for_log(options: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of yt-dlp options safe for logging."""
+    sanitized = dict(options)
+    if "password" in sanitized:
+        sanitized["password"] = "***"
     return sanitized
 
 
-def _build_cli_command(
-    url: str,
+def _build_ydl_options(
     template: str,
     use_ffmpeg: bool,
     cookies_path: Optional[Path],
     username: Optional[str],
     password: Optional[str],
-    extra_flags: Optional[List[str]] = None,
-) -> List[str]:
-    """Assemble the yt-dlp CLI command mirroring downloader.py behaviour."""
-    if YT_DLP_EXECUTABLE:
-        command: List[str] = [YT_DLP_EXECUTABLE]
-    else:
-        command = [sys.executable, "-m", "yt_dlp"]
-
-    format_selector = "bv*+ba/b" if use_ffmpeg else "best"
-    command.extend(
-        [
-            url,
-            "-f",
-            format_selector,
-            "--no-playlist",
-            "--no-write-info-json",
-            "--no-simulate",
-            "--no-abort-on-error",
-            "--no-part",
-            "--force-overwrites",
-            "--user-agent",
-            _YOUTUBE_USER_AGENT,
-            "--extractor-args",
-            _YOUTUBE_EXTRACTOR_ARGS,
-            "-o",
-            template,
-            "--print",
-            "after_move:filepath",
-        ]
-    )
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Construct yt-dlp options mirroring the working example implementation."""
+    options: Dict[str, Any] = {
+        "outtmpl": template,
+        "format": "bv*+ba/b" if use_ffmpeg else "best",
+        "merge_output_format": "mp4" if use_ffmpeg else None,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "http_headers": {"User-Agent": _YOUTUBE_USER_AGENT},
+    }
+    if not use_ffmpeg:
+        options.pop("merge_output_format", None)
 
     if use_ffmpeg:
-        command.extend(["--merge-output-format", "mp4"])
         ffmpeg_location = _ffmpeg_location_arg()
         if ffmpeg_location:
-            command.extend(["--ffmpeg-location", ffmpeg_location])
+            options["ffmpeg_location"] = ffmpeg_location
 
     if cookies_path:
-        command.extend(["--cookies", str(cookies_path)])
+        options["cookiefile"] = str(cookies_path)
 
     if username:
-        command.extend(["--username", username])
+        options["username"] = username
         if password:
-            command.extend(["--password", password])
+            options["password"] = password
 
-    if extra_flags:
-        command.extend(extra_flags)
+    if cookies_path:
+        extractor_args = {"youtube": {"player_client": ["web"]}}
+    else:
+        extractor_args = {"youtube": {"player_client": ["android", "web"]}}
 
-    return command
+    options["extractor_args"] = extractor_args
 
+    if extra:
+        options.update(extra)
 
-def _parse_filepath_from_output(output: str) -> Optional[Path]:
-    """Extract the final filepath emitted via --print after_move:filepath."""
-    for line in reversed(output.splitlines()):
-        candidate = line.strip()
-        if not candidate:
-            continue
-        if candidate.lower().startswith("yt-dlp"):
-            continue
-        path = Path(candidate)
-        if path.exists():
-            return path
-        # Keep the raw candidate; caller will verify existence.
-        if path.parts:
-            return path
-    return None
+    return options
 
 
-def _run_cli_download(command: List[str], output_dir: Path) -> Tuple[Optional[Path], str, str, Optional[str]]:
-    """Execute yt-dlp via subprocess and capture the resulting file path."""
-    sanitized = _sanitize_cli_args(command)
-    LOGGER.debug("Running yt-dlp CLI: %s", sanitized)
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-    )
-    stdout = completed.stdout or ""
-    stderr = completed.stderr or ""
+def _determine_output_path(info: Dict[str, Any], ydl: "yt_dlp.YoutubeDL") -> Path:
+    """Resolve the final output path reported by yt-dlp."""
+    final_name = info.get("_filename")
+    if final_name:
+        candidate = Path(final_name)
+        if candidate.exists():
+            return candidate
 
-    if completed.returncode != 0:
-        message = (stderr.strip() or stdout.strip() or f"yt-dlp exited with code {completed.returncode}")
-        return None, stdout, stderr, message
+    requested = info.get("requested_downloads") or []
+    for request in requested:
+        filepath = request.get("filepath")
+        if filepath:
+            candidate_path = Path(filepath)
+            if candidate_path.exists():
+                return candidate_path
 
-    file_path = _parse_filepath_from_output(stdout)
-    if file_path and not file_path.exists():
-        # Attempt to resolve relative paths inside output_dir
-        potential = output_dir / file_path.name
-        if potential.exists():
-            file_path = potential
+    candidate = Path(ydl.prepare_filename(info))
+    ext = info.get("ext")
+    if ext:
+        candidate = candidate.with_suffix(f".{ext}")
+    return candidate
 
-    if not file_path or not file_path.exists():
-        message = "yt-dlp did not report an output file."
-        return None, stdout, stderr, message
 
-    try:
-        size = file_path.stat().st_size
-    except OSError as exc:
-        return None, stdout, stderr, f"Unable to access downloaded file {file_path}: {exc}"
-
-    if size == 0:
-        try:
-            file_path.unlink()
-        except OSError:
-            pass
-        return None, stdout, stderr, "The downloaded file is empty"
-
-    return file_path, stdout, stderr, None
+def _download_with_options(
+    url: str,
+    ydl_opts: Dict[str, Any],
+) -> Path:
+    """Execute yt-dlp using library API and return the downloaded file path."""
+    sanitized_opts = _sanitize_opts_for_log(ydl_opts)
+    LOGGER.debug("Executing yt-dlp with options: %s", sanitized_opts)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        file_path = _determine_output_path(info, ydl)
+    if not file_path.exists():
+        raise FileNotFoundError(f"yt-dlp reported download at {file_path} but the file does not exist.")
+    return file_path
 
 
 def _log_download_error(url: str, message: str) -> None:
@@ -412,15 +351,13 @@ def download_video(
         )
 
     attempt_configs = [
-        ("initial", []),
-        ("ipv4", ["--force-ipv4", "--http-chunk-size", "1048576"]),
+        ("initial", None),
+        ("ipv4", {"forceipv4": True, "http_chunk_size": 1_048_576}),
     ]
 
     last_error_message: Optional[str] = None
-    last_stdout: str = ""
-    last_stderr: str = ""
 
-    for index, (label, extra_flags) in enumerate(attempt_configs):
+    for index, (label, extra_opts) in enumerate(attempt_configs):
         if index > 0:
             if not (last_error_message and "downloaded file is empty" in last_error_message.lower()):
                 break
@@ -429,18 +366,17 @@ def download_video(
                 url,
             )
 
-        command = _build_cli_command(
-            url,
+        ydl_opts = _build_ydl_options(
             template,
             FFMPEG_AVAILABLE,
             resolved_cookies_path,
             auth_username,
             auth_password,
-            extra_flags,
+            extra_opts,
         )
 
-        file_path, stdout, stderr, error_message = _run_cli_download(command, output_dir)
-        if file_path:
+        try:
+            file_path = _download_with_options(url, ydl_opts)
             LOGGER.info("Downloaded %s -> %s", url, file_path)
             if clip_start_seconds is not None or clip_end_seconds is not None:
                 LOGGER.info(
@@ -455,32 +391,22 @@ def download_video(
                     return None
                 file_path = clipped_path
             return file_path
-
-        last_error_message = error_message or "Unknown download error."
-        last_stdout = stdout
-        last_stderr = stderr
-
-        if index == 0 and last_error_message and "downloaded file is empty" in last_error_message.lower():
-            LOGGER.warning(
-                "Initial download attempt for %s resulted in an empty file. Retrying with IPv4 fallback.",
-                url,
-            )
-            continue
-
-        if last_error_message:
+        except yt_dlp.utils.DownloadError as err:
+            last_error_message = str(err)
+            if index == 0 and "downloaded file is empty" in last_error_message.lower():
+                LOGGER.warning(
+                    "Initial download attempt for %s resulted in an empty file. Retrying with IPv4 fallback.",
+                    url,
+                )
+                continue
             _log_download_error(url, last_error_message)
-        if last_stdout.strip():
-            LOGGER.debug("yt-dlp stdout:\n%s", last_stdout.strip())
-        if last_stderr.strip():
-            LOGGER.debug("yt-dlp stderr:\n%s", last_stderr.strip())
-        return None
+            return None
+        except Exception:  # pragma: no cover - defensive
+            LOGGER.exception("Unexpected error during video download for %s", url)
+            return None
 
     if last_error_message:
         _log_download_error(url, last_error_message)
-        if last_stdout.strip():
-            LOGGER.debug("yt-dlp stdout:\n%s", last_stdout.strip())
-        if last_stderr.strip():
-            LOGGER.debug("yt-dlp stderr:\n%s", last_stderr.strip())
     return None
 
 
