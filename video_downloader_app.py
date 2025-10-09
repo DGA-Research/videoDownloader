@@ -3,7 +3,9 @@ Streamlit interface for the minimal video downloader.
 """
 import csv
 import logging
-from io import StringIO
+import zipfile
+from datetime import datetime
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
@@ -15,6 +17,12 @@ from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, LOGGER, download_vid
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATEFMT = "%H:%M:%S"
 DEFAULT_OUTPUT_DIR = Path("downloads")
+
+STATUS_COLUMN = "Download Status"
+DETAIL_COLUMN = "Download Detail"
+PATH_COLUMN = "Download Path"
+TIMESTAMP_COLUMN = "Processed At"
+COMPLETED_STATUS_VALUES = {"downloaded", "success"}
 
 MIME_BY_SUFFIX = {
     ".mp4": "video/mp4",
@@ -28,6 +36,10 @@ MIME_BY_SUFFIX = {
 def _display_batch_results(data: dict) -> None:
     if not data:
         return
+
+    paused_after = data.get("paused_after") or 0
+    if paused_after:
+        st.info(f"Batch processing paused after {paused_after} row(s) per user setting.")
 
     success_count = data.get("success_count", 0)
     failure_count = data.get("failure_count", 0)
@@ -73,6 +85,25 @@ def _display_batch_results(data: dict) -> None:
     if log_output:
         st.text_area("Batch logs", log_output, height=240, key="csv_batch_logs")
 
+    updated_csv = data.get("updated_csv")
+    if updated_csv:
+        st.download_button(
+            "Download updated CSV",
+            data=updated_csv,
+            file_name=data.get("updated_csv_filename") or "batch_results.csv",
+            mime="text/csv",
+            key="batch_updated_csv",
+        )
+
+    zip_bytes = data.get("zip_bytes")
+    if zip_bytes:
+        st.download_button(
+            "Download all clips (.zip)",
+            data=zip_bytes,
+            file_name=data.get("zip_filename") or "clips.zip",
+            mime="application/zip",
+            key="batch_clips_zip",
+        )
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
@@ -240,6 +271,18 @@ with st.form("csv_download_form"):
         help="Upload cookies to use for every URL in the CSV batch.",
         key="csv_cookies",
     )
+    pause_after = st.number_input(
+        "Process rows then pause (0 = run all)",
+        min_value=0,
+        value=0,
+        step=1,
+        help="Set to a positive number to stop after that many rows so you can download results before continuing.",
+    )
+    skip_completed = st.checkbox(
+        "Skip rows already marked as downloaded in the CSV",
+        value=True,
+        help="When enabled, rows whose download status column already indicates success are not processed again.",
+    )
     csv_submitted = st.form_submit_button("Download URLs from CSV")
 
 if csv_submitted:
@@ -276,6 +319,29 @@ if csv_submitted:
                         if not rows:
                             st.warning("CSV did not contain any data rows.")
                         else:
+                            fieldnames = reader.fieldnames or []
+
+                            def _find_column(name: str) -> Optional[str]:
+                                lowered = name.lower()
+                                for column in fieldnames:
+                                    if column and column.strip().lower() == lowered:
+                                        return column
+                                return None
+
+                            status_column = _find_column(STATUS_COLUMN) or STATUS_COLUMN
+                            detail_column = _find_column(DETAIL_COLUMN) or DETAIL_COLUMN
+                            path_column = _find_column(PATH_COLUMN) or PATH_COLUMN
+                            timestamp_column = _find_column(TIMESTAMP_COLUMN) or TIMESTAMP_COLUMN
+
+                            base_fieldnames = list(fieldnames)
+                            for column_name in (status_column, detail_column, path_column, timestamp_column):
+                                if column_name not in base_fieldnames:
+                                    base_fieldnames.append(column_name)
+
+                            skip_column = next(
+                                (col for col in fieldnames if col and col.strip().lower() == "skip"),
+                                None,
+                            )
                             log_buffer = StringIO()
                             handler = logging.StreamHandler(log_buffer)
                             handler.setLevel(logging.INFO)
@@ -305,9 +371,24 @@ if csv_submitted:
                                 downloadable_items = []
                                 total = len(rows)
                                 filename_candidates = ("File Name", "Filename", "file_name", "Name")
+                                pause_limit = int(pause_after or 0)
+                                pause_triggered = False
+                                downloaded_count = 0
+                                failed_count = 0
+                                skipped_count_run = 0
+
+                                def set_row_status(row_dict: dict, status: str, detail: str, path_value: Optional[Path] = None) -> None:
+                                    timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                                    row_dict[status_column] = status
+                                    row_dict[detail_column] = detail
+                                    row_dict[path_column] = str(path_value) if path_value else ""
+                                    row_dict[timestamp_column] = timestamp
 
                                 def _update_placeholders(current_row: int, status_text: str) -> None:
-                                    status_placeholder.markdown(f"**Row {current_row}/{total}:** {status_text}")
+                                    status_placeholder.markdown(
+                                        f"**Row {current_row}/{total}:** {status_text}\n\n"
+                                        f"✅ Downloads: {downloaded_count} | ❌ Failures: {failed_count} | ⚪ Skipped: {skipped_count_run}"
+                                    )
                                     log_snapshot = log_buffer.getvalue().strip().splitlines()
                                     if log_snapshot:
                                         recent = "\n".join(log_snapshot[-12:])
@@ -316,12 +397,49 @@ if csv_submitted:
                                         log_placeholder.text("Logs will appear here while the batch runs.")
 
                                 for index, row in enumerate(rows, start=1):
+                                    if skip_completed and status_column:
+                                        existing_status = str(row.get(status_column, "")).strip().lower()
+                                        if existing_status in COMPLETED_STATUS_VALUES:
+                                            LOGGER.info("Row %s already marked as downloaded; skipping.", index)
+                                            results.append(
+                                                {
+                                                    "Row": index,
+                                                    "URL": row.get(url_column, "").strip(),
+                                                    "Status": "skipped",
+                                                    "Detail": "Already marked as downloaded in CSV.",
+                                                }
+                                            )
+                                            skipped_count_run += 1
+                                            progress.progress(index / total)
+                                            _update_placeholders(index, "Already marked as downloaded in CSV.")
+                                            continue
+
+                                    if skip_column:
+                                        skip_value = str(row.get(skip_column, "")).strip()
+                                        if skip_value in {"1", "true", "yes", "skip"}:
+                                            LOGGER.info("Row %s marked as skipped via SKIP column.", index)
+                                            results.append(
+                                                {
+                                                    "Row": index,
+                                                    "URL": row.get(url_column, "").strip(),
+                                                    "Status": "skipped",
+                                                    "Detail": "Marked to skip via CSV.",
+                                                }
+                                            )
+                                            set_row_status(row, "skipped", "Marked to skip via CSV.")
+                                            skipped_count_run += 1
+                                            progress.progress(index / total)
+                                            _update_placeholders(index, "Marked to skip via CSV.")
+                                            continue
+
                                     url_value = (row.get(url_column) or "").strip()
                                     if not url_value:
                                         LOGGER.warning("Row %s has an empty URL; skipping.", index)
                                         results.append(
                                             {"Row": index, "URL": "", "Status": "skipped", "Detail": "Missing URL value."}
                                         )
+                                        set_row_status(row, "skipped", "Missing URL value.")
+                                        skipped_count_run += 1
                                         progress.progress(index / total)
                                         _update_placeholders(index, "Skipped row - missing URL value.")
                                         continue
@@ -360,16 +478,19 @@ if csv_submitted:
                                         row_errors.append("ffmpeg not available for clipping.")
 
                                     if row_errors:
+                                        detail_message = "; ".join(row_errors)
                                         results.append(
                                             {
                                                 "Row": index,
                                                 "URL": url_value,
                                                 "Status": "failed",
-                                                "Detail": "; ".join(row_errors),
+                                                "Detail": detail_message,
                                             }
                                         )
+                                        set_row_status(row, "failed", detail_message)
+                                        failed_count += 1
                                         progress.progress(index / total)
-                                        _update_placeholders(index, "; ".join(row_errors))
+                                        _update_placeholders(index, detail_message)
                                         continue
 
                                     saved_path = download_video(
@@ -381,8 +502,9 @@ if csv_submitted:
                                         clip_end=clip_end_seconds,
                                     )
                                     if saved_path:
+                                        detail_message = str(Path(saved_path))
                                         results.append(
-                                            {"Row": index, "URL": url_value, "Status": "downloaded", "Detail": str(saved_path)}
+                                            {"Row": index, "URL": url_value, "Status": "downloaded", "Detail": detail_message}
                                         )
                                         downloadable_items.append(
                                             {
@@ -391,10 +513,15 @@ if csv_submitted:
                                                 "display_name": filename_value or Path(saved_path).name,
                                             }
                                         )
+                                        set_row_status(row, "downloaded", detail_message, Path(saved_path))
+                                        downloaded_count += 1
                                     else:
+                                        detail_message = "Download failed."
                                         results.append(
-                                            {"Row": index, "URL": url_value, "Status": "failed", "Detail": "Download failed."}
+                                            {"Row": index, "URL": url_value, "Status": "failed", "Detail": detail_message}
                                         )
+                                        set_row_status(row, "failed", detail_message)
+                                        failed_count += 1
                                     progress.progress(index / total)
                                     last_entry = results[-1]
                                     status_message = f"{last_entry['Status'].capitalize()} – {last_entry['Detail']}"
@@ -403,9 +530,21 @@ if csv_submitted:
                                         f"{last_entry['URL']} → {status_message}",
                                     )
 
+                                    if pause_limit and index >= pause_limit:
+                                        pause_triggered = True
+                                        _update_placeholders(
+                                            index,
+                                            f"Paused automatically after {pause_limit} row(s).",
+                                        )
+                                        break
+
                                 progress.empty()
-                                status_placeholder.empty()
-                                log_placeholder.empty()
+                                if pause_triggered:
+                                    status_placeholder.info(f"Batch paused after {pause_limit} row(s). Submit again to continue.")
+                                    log_placeholder.text(log_buffer.getvalue().strip())
+                                else:
+                                    status_placeholder.empty()
+                                    log_placeholder.empty()
                             finally:
                                 handler.flush()
                                 root_logger.removeHandler(handler)
@@ -419,6 +558,45 @@ if csv_submitted:
                                             "Failed to remove temporary cookies file at %s", temp_cookie_path
                                         )
 
+                            updated_csv_buffer = StringIO()
+                            writer = csv.DictWriter(updated_csv_buffer, fieldnames=base_fieldnames)
+                            writer.writeheader()
+                            for row in rows:
+                                for column_name in (status_column, detail_column, path_column, timestamp_column):
+                                    row.setdefault(column_name, "")
+                                writer.writerow({key: row.get(key, "") for key in base_fieldnames})
+                            updated_csv_bytes = updated_csv_buffer.getvalue().encode("utf-8-sig")
+
+                            zip_bytes = None
+                            if downloadable_items:
+                                buffer = BytesIO()
+                                used_names = set()
+                                with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                                    for item in downloadable_items:
+                                        saved_path = Path(item["path"])
+                                        if not saved_path.exists():
+                                            continue
+                                        arcname = saved_path.name
+                                        if arcname in used_names:
+                                            stem = saved_path.stem
+                                            suffix = saved_path.suffix
+                                            counter = 1
+                                            while True:
+                                                candidate = f"{stem}_{counter}{suffix}"
+                                                if candidate not in used_names:
+                                                    arcname = candidate
+                                                    break
+                                                counter += 1
+                                        used_names.add(arcname)
+                                        zf.write(saved_path, arcname=arcname)
+                                buffer.seek(0)
+                                zip_bytes = buffer.getvalue()
+
+                            source_name = getattr(csv_file, "name", "") or "batch.csv"
+                            csv_base_name = Path(source_name).stem or "batch"
+                            updated_csv_name = f"{csv_base_name}_with_status.csv"
+                            zip_filename = f"{csv_base_name}_clips.zip"
+
                             success_count = sum(1 for item in results if item["Status"] == "downloaded")
                             failure_count = sum(1 for item in results if item["Status"] == "failed")
                             skipped_count = sum(1 for item in results if item["Status"] == "skipped")
@@ -430,6 +608,12 @@ if csv_submitted:
                                 "failure_count": failure_count,
                                 "skipped_count": skipped_count,
                                 "log_output": batch_log_output,
+                                "paused_after": pause_limit if pause_triggered else 0,
+                                "updated_csv": updated_csv_bytes,
+                                "updated_csv_filename": updated_csv_name,
+                                "zip_bytes": zip_bytes,
+                                "zip_filename": zip_filename,
+                                "source_filename": source_name,
                             }
 
 st.divider()
