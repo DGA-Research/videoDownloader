@@ -110,7 +110,7 @@ def _next_clip_path(source: Path) -> Path:
     candidate = source.with_name(f"{source.stem}_clip{suffix}")
     counter = 1
     while candidate.exists():
-        candidate = source.with_name(f"{source.stem}_clip_{counter}{suffix}")
+        candidate = source.with_name(f"{source.stem}_clip_{counter}{source.suffix}")
         counter += 1
     return candidate
 
