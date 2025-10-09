@@ -74,13 +74,13 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     download_map = {item["row"]: item for item in downloadable_items or []}
 
     if results:
-        with st.container():
+        table_container = st.container()
+        with table_container:
             st.markdown(
                 '<div style="max-height: 360px; overflow-y: auto; padding-right: 8px;">',
                 unsafe_allow_html=True,
             )
-            table_container = st.container()
-            header_cols = table_container.columns([1, 3, 2, 4, 2])
+            header_cols = st.columns([1, 3, 2, 4, 2])
             header_cols[0].markdown("**Row**")
             header_cols[1].markdown("**URL**")
             header_cols[2].markdown("**Status**")
@@ -89,7 +89,7 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
 
             for entry in results:
                 row_number = entry.get("Row", "")
-                cols = table_container.columns([1, 3, 2, 4, 2])
+                cols = st.columns([1, 3, 2, 4, 2])
                 cols[0].write(row_number)
                 url_value = entry.get("URL", "")
                 status_value = entry.get("Status", "")
@@ -948,5 +948,7 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
+
+
 
 
