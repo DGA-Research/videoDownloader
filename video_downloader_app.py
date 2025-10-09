@@ -11,6 +11,7 @@ from tempfile import NamedTemporaryFile
 from typing import List, Optional, Tuple
 
 import streamlit as st
+import html
 
 from video_downloader import FFMPEG_AVAILABLE, FFMPEG_PATH, LOGGER, download_video, parse_time_to_seconds
 
@@ -90,9 +91,18 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
                 row_number = entry.get("Row", "")
                 cols = table_container.columns([1, 3, 2, 4, 2])
                 cols[0].write(row_number)
-                cols[1].write(entry.get("URL", ""))
-                cols[2].write(entry.get("Status", ""))
-                cols[3].write(entry.get("Detail", ""))
+                url_value = entry.get("URL", "")
+                status_value = entry.get("Status", "")
+                detail_value = entry.get("Detail", "")
+                cols[1].markdown(
+                    f"<div style='word-break: break-word;'>{html.escape(url_value or '')}</div>",
+                    unsafe_allow_html=True,
+                )
+                cols[2].write(status_value)
+                cols[3].markdown(
+                    f"<div style='word-break: break-word;'>{html.escape(detail_value or '')}</div>",
+                    unsafe_allow_html=True,
+                )
 
                 download_cell = cols[4]
                 status_lower = str(entry.get("Status", "")).strip().lower()
@@ -938,7 +948,5 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
-
-
 
 
