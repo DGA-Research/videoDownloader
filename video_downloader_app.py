@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import streamlit as st
 
@@ -52,11 +52,11 @@ def _display_batch_results(data: dict) -> None:
     if skipped_count:
         st.warning(f"Skipped {skipped_count} row(s) without a URL value.")
 
-    results = data.get("results") or []
+    results = data.get("results") or st.session_state.get("batch_all_results") or []
     if results:
         st.table(results)
 
-    downloadable_items = data.get("downloadable_items") or []
+    downloadable_items = data.get("downloadable_items") or st.session_state.get("batch_all_downloads") or []
     if downloadable_items:
         st.write("Download individual files:")
         for item in downloadable_items:
@@ -461,6 +461,67 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     }
     return batch_results
 
+
+def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict]]:
+    rows = context.get("rows") or []
+    url_column = context.get("url_column")
+    status_column = context.get("status_column")
+    detail_column = context.get("detail_column")
+    path_column = context.get("path_column")
+    filename_candidates = context.get("filename_candidates") or ()
+
+    processed_rows: List[dict] = []
+    download_items: List[dict] = []
+
+    for idx, row in enumerate(rows, start=1):
+        status = str(row.get(status_column, "")).strip()
+        if not status:
+            continue
+        entry = {
+            "Row": idx,
+            "URL": (row.get(url_column) or "").strip(),
+            "Status": status,
+            "Detail": row.get(detail_column, ""),
+        }
+        processed_rows.append(entry)
+
+        if status.lower() == "downloaded":
+            path_str = row.get(path_column, "")
+            if not path_str:
+                continue
+            try:
+                saved_path = Path(path_str)
+            except (TypeError, ValueError):
+                continue
+            display_name = ""
+            for candidate in filename_candidates:
+                value = row.get(candidate)
+                if value and str(value).strip():
+                    display_name = str(value).strip()
+                    break
+            download_items.append(
+                {
+                    "row": idx,
+                    "path": path_str,
+                    "display_name": display_name or saved_path.name,
+                }
+            )
+
+    processed_rows.sort(key=lambda item: item["Row"])
+    download_items.sort(key=lambda item: item["row"])
+    return processed_rows, download_items
+
+
+def _update_batch_history(context: dict, batch_results: dict) -> dict:
+    processed_rows, download_items = _build_history_from_context(context)
+    st.session_state["batch_all_results"] = processed_rows
+    st.session_state["batch_all_downloads"] = download_items
+
+    batch_results = dict(batch_results)
+    batch_results["results"] = processed_rows
+    batch_results["downloadable_items"] = download_items
+    return batch_results
+
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
 
 st.set_page_config(page_title="Video Downloader", page_icon=":inbox_tray:", layout="centered")
@@ -700,6 +761,9 @@ if csv_submitted:
                                 None,
                             )
 
+                            st.session_state["batch_all_results"] = []
+                            st.session_state["batch_all_downloads"] = []
+
                             context = {
                                 "rows": rows,
                                 "fieldnames": base_fieldnames,
@@ -719,6 +783,7 @@ if csv_submitted:
                             st.session_state["batch_context"] = context
                             batch_results = _process_batch(context, int(pause_after or 0), bool(skip_completed))
                             if batch_results is not None:
+                                batch_results = _update_batch_history(context, batch_results)
                                 st.session_state["batch_results"] = batch_results
                                 processing_triggered = True
                                 if batch_results.get("remaining_rows") == 0:
@@ -736,6 +801,7 @@ if st.session_state.pop("continue_requested", False):
         )
         batch_results = _process_batch(context, pause_limit, skip_choice)
         if batch_results is not None:
+            batch_results = _update_batch_history(context, batch_results)
             st.session_state["batch_results"] = batch_results
             processing_triggered = True
             if batch_results.get("remaining_rows") == 0:
