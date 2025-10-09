@@ -188,6 +188,8 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     log_output = data.get("log_output", "")
     if log_output:
         st.text_area("Batch logs", log_output, height=240, key="csv_batch_logs")
+        if "HTTP Error 403: Forbidden" in log_output and not st.session_state.get("cookie_refresh_prompt", False):
+            st.session_state["cookie_refresh_prompt"] = True
 
     updated_csv = data.get("updated_csv")
     zip_bytes = data.get("zip_bytes")
@@ -330,6 +332,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                                 "Detail": detail_message,
                             }
                         )
+                        set_row_status(row, "skipped", detail_message)
                         skipped_total += 1
                         update_placeholders(index, detail_message)
                         context["next_row"] = zero_idx + 1
@@ -661,6 +664,8 @@ if "batch_live_row_text" not in st.session_state:
     st.session_state["batch_live_row_text"] = None
 if "batch_live_counts_text" not in st.session_state:
     st.session_state["batch_live_counts_text"] = None
+if "cookie_refresh_prompt" not in st.session_state:
+    st.session_state["cookie_refresh_prompt"] = False
 
 single_download_output = st.container()
 single_download_expander = st.sidebar.expander("Single Video Download", expanded=True)
@@ -818,6 +823,11 @@ with batch_download_expander:
         "Need cookies? Install the Get cookies.txt extension, export cookies from your signed-in browser tab, "
         "and upload the file here before downloading."
     )
+    if st.session_state.get("cookie_refresh_prompt"):
+        st.warning(
+            "Recent downloads hit HTTP 403 errors. Upload fresh cookies before continuing.",
+            icon="⚠️",
+        )
     if "batch_pause_after" not in st.session_state:
         st.session_state["batch_pause_after"] = 0
     if batch_locked:
