@@ -222,6 +222,13 @@ def download_video(
             "no_warnings": True,
         }
 
+    youtube_clients: Tuple[str, ...] = ("android", "web")
+    ydl_opts["extractor_args"] = {"youtube": {"player_client": youtube_clients}}
+    ydl_opts.setdefault("http_headers", {})["User-Agent"] = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    )
+
     if cookies_path:
         cookies_path = Path(cookies_path)
         if cookies_path.exists():
