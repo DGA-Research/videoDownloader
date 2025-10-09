@@ -42,9 +42,31 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     failure_count = summary_counts.get("failure", data.get("failure_count", 0))
     skipped_count = summary_counts.get("skipped", data.get("skipped_count", 0))
 
-    st.markdown(
-        f"✅ Downloads: {success_count} | ❌ Failures: {failure_count} | ⚪ Skipped: {skipped_count}"
-    )
+    status_slot = st.session_state.get("batch_status_placeholder")
+    if status_slot is None:
+        status_slot = st.empty()
+        st.session_state["batch_status_placeholder"] = status_slot
+    progress_slot = st.session_state.get("batch_progress_placeholder")
+    if progress_slot is None:
+        progress_slot = st.empty()
+        st.session_state["batch_progress_placeholder"] = progress_slot
+
+    live_active = st.session_state.get("batch_live_active", False)
+    live_row_text = st.session_state.get("batch_live_row_text")
+    live_counts_text = st.session_state.get("batch_live_counts_text")
+
+    if live_active:
+        if live_row_text or live_counts_text:
+            combined = "\n\n".join(filter(None, [live_row_text, live_counts_text]))
+            status_slot.markdown(combined)
+        else:
+            status_slot.empty()
+    else:
+        status_slot.markdown(
+            f"✅ Downloads: {success_count} | ❌ Failures: {failure_count} | ⚪ Skipped: {skipped_count}"
+        )
+        if progress_slot:
+            progress_slot.empty()
 
     results = data.get("results") or st.session_state.get("batch_all_results") or []
     downloadable_items = data.get("downloadable_items") or st.session_state.get("batch_all_downloads") or []
@@ -125,6 +147,9 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
         )
         next_skip_completed = bool(st.session_state.get("batch_skip_completed_toggle", skip_completed_default))
         if continue_controls.button("Continue batch", key="batch_continue_button"):
+            st.session_state["batch_live_active"] = True
+            st.session_state["batch_live_row_text"] = None
+            st.session_state["batch_live_counts_text"] = None
             st.session_state["continue_requested"] = True
             st.session_state["continue_chunk_size"] = int(next_chunk)
             st.session_state["continue_skip_completed"] = bool(next_skip_completed)
@@ -186,8 +211,22 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 tmp.write(cookies_bytes)
                 temp_cookie_path = Path(tmp.name)
 
-        progress = st.progress(start_index / total if total else 0.0) if total else None
-        status_placeholder = st.empty()
+        progress_slot = st.session_state.get("batch_progress_placeholder")
+        if progress_slot is None:
+            progress_slot = st.empty()
+            st.session_state["batch_progress_placeholder"] = progress_slot
+        progress = progress_slot.progress(start_index / total if total else 0.0) if total else None
+
+        status_placeholder = st.session_state.get("batch_status_placeholder")
+        if status_placeholder is None:
+            status_placeholder = st.empty()
+            st.session_state["batch_status_placeholder"] = status_placeholder
+
+        st.session_state["batch_live_active"] = True
+        st.session_state["batch_live_row_text"] = None
+        st.session_state["batch_live_counts_text"] = None
+        status_placeholder.empty()
+
         log_placeholder = st.empty()
 
         results = []
@@ -223,10 +262,13 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         def update_placeholders(row_number: int, status_text: str) -> None:
             if progress and total:
                 progress.progress(min(1.0, row_number / total))
-            status_placeholder.markdown(
-                f"**Row {row_number}/{total}:** {status_text}\n\n"
+            row_line = f"Row {row_number}/{total}: {status_text}"
+            counts_line = (
                 f"✅ Downloads: {downloaded_total} | ❌ Failures: {failed_total} | ⚪ Skipped: {skipped_total}"
             )
+            status_placeholder.markdown(f"{row_line}\n\n{counts_line}")
+            st.session_state["batch_live_row_text"] = row_line
+            st.session_state["batch_live_counts_text"] = counts_line
             log_lines = log_buffer.getvalue().strip().splitlines()
             if log_lines:
                 recent = "\n".join(log_lines[-12:])
@@ -235,6 +277,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 log_placeholder.text("Logs will appear here while the batch runs.")
 
         if start_index >= total:
+            st.session_state["batch_live_active"] = False
             status_placeholder.info("All rows in this batch have already been processed.")
         else:
             for zero_idx in range(start_index, total):
@@ -384,8 +427,11 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         if not pause_triggered:
             context["next_row"] = total
 
-        if progress:
-            progress.empty()
+        if progress_slot:
+            progress_slot.empty()
+        st.session_state["batch_live_active"] = False
+        st.session_state["batch_live_row_text"] = None
+        st.session_state["batch_live_counts_text"] = None
         if pause_triggered:
             status_placeholder.info(
                 f"Batch paused after {pause_limit} row(s). Use the sidebar continue controls to process more rows."
@@ -395,6 +441,9 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             status_placeholder.empty()
             log_placeholder.empty()
     finally:
+        st.session_state["batch_live_active"] = False
+        st.session_state["batch_live_row_text"] = None
+        st.session_state["batch_live_counts_text"] = None
         handler.flush()
         root_logger.removeHandler(handler)
         root_logger.setLevel(previous_root_level)
@@ -571,6 +620,17 @@ st.write(
 st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 if not FFMPEG_AVAILABLE:
     st.warning("ffmpeg not detected. Install ffmpeg to enable audio/video clipping and proper muxing.")
+
+if "batch_progress_placeholder" not in st.session_state:
+    st.session_state["batch_progress_placeholder"] = st.empty()
+if "batch_status_placeholder" not in st.session_state:
+    st.session_state["batch_status_placeholder"] = st.empty()
+if "batch_live_active" not in st.session_state:
+    st.session_state["batch_live_active"] = False
+if "batch_live_row_text" not in st.session_state:
+    st.session_state["batch_live_row_text"] = None
+if "batch_live_counts_text" not in st.session_state:
+    st.session_state["batch_live_counts_text"] = None
 
 single_download_output = st.container()
 single_download_expander = st.sidebar.expander("Single Video Download", expanded=True)
@@ -752,6 +812,10 @@ with batch_download_expander:
         csv_submitted = False
     else:
         csv_submitted = st.button("Download URLs from CSV", use_container_width=True)
+        if csv_submitted:
+            st.session_state["batch_live_active"] = True
+            st.session_state["batch_live_row_text"] = None
+            st.session_state["batch_live_counts_text"] = None
 
 
 batch_results = st.session_state.get("batch_results")
@@ -868,6 +932,7 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
+
 
 
 
