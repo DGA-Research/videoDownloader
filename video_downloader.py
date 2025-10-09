@@ -3,7 +3,6 @@ Minimal video downloader for sites supported by yt-dlp.
 """
 import logging
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -60,110 +59,6 @@ def configure_logging(level: str = "INFO") -> None:
     LOGGER.setLevel(resolved)
 
 
-def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
-    """Parse a human-friendly time string (e.g. 1:23:45) into seconds."""
-    if value is None:
-        return None
-
-    if isinstance(value, (int, float)):
-        numeric = float(value)
-        if numeric < 0:
-            return None
-        return numeric
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    try:
-        parsed = yt_dlp.utils.parse_duration(text)
-    except Exception:  # pragma: no cover - defensive
-        parsed = None
-
-    if parsed is not None:
-        return float(parsed)
-
-    try:
-        numeric = float(text)
-    except ValueError:
-        return None
-    if numeric < 0:
-        return None
-    return numeric
-
-
-def _format_ffmpeg_time(seconds: float) -> str:
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = seconds - hours * 3600 - minutes * 60
-    if abs(secs - round(secs)) < 1e-3:
-        secs_str = f"{int(round(secs)):02d}"
-    else:
-        secs_str = f"{secs:06.3f}".rstrip("0").rstrip(".")
-        if secs_str == "":
-            secs_str = "00"
-    return f"{hours:02d}:{minutes:02d}:{secs_str}"
-
-
-def _next_clip_path(source: Path) -> Path:
-    suffix = source.suffix or ".mp4"
-    candidate = source.with_name(f"{source.stem}_clip{suffix}")
-    counter = 1
-    while candidate.exists():
-        candidate = source.with_name(f"{source.stem}_clip_{counter}{source.suffix}")
-        counter += 1
-    return candidate
-
-
-def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> Optional[Path]:
-    if not FFMPEG_AVAILABLE:
-        LOGGER.error("Clipping requested but ffmpeg is not available.")
-        return None
-    if not source.exists():
-        LOGGER.error("Cannot clip %s because the file does not exist.", source)
-        return None
-
-    temp_target = _next_clip_path(source)
-    command = [str(FFMPEG_PATH or "ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
-    if start is not None:
-        command += ["-ss", _format_ffmpeg_time(start)]
-    command += ["-i", str(source)]
-
-    if end is not None:
-        duration = end if start is None else end - start
-        if duration <= 0:
-            LOGGER.error("Clip end time must be greater than clip start time.")
-            return None
-        command += ["-t", _format_ffmpeg_time(duration)]
-
-    command += ["-c", "copy", str(temp_target)]
-    LOGGER.debug("Running ffmpeg clip command: %s", command)
-
-    completed = subprocess.run(command, capture_output=True, text=True)
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        stdout = (completed.stdout or "").strip()
-        LOGGER.error("ffmpeg failed to clip %s: %s", source, stderr or stdout or "Unknown error.")
-        if temp_target.exists():
-            try:
-                temp_target.unlink()
-            except OSError:
-                LOGGER.warning("Failed to remove temporary clip file at %s", temp_target)
-        return None
-
-    try:
-        temp_target.replace(source)
-    except OSError as exc:
-        LOGGER.error("Failed to replace original file with clipped media: %s", exc)
-        try:
-            temp_target.unlink()
-        except OSError:
-            LOGGER.warning("Failed to remove temporary clip file at %s", temp_target)
-        return None
-
-    return source
-
-
 def download_video(
     url: str,
     output_dir: Path,
@@ -171,8 +66,6 @@ def download_video(
     cookies_path: Optional[Path] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
-    clip_start: Optional[float] = None,
-    clip_end: Optional[float] = None,
 ) -> Optional[Path]:
     LOGGER.info("Starting download for %s", url)
     output_dir = Path(output_dir)
@@ -184,16 +77,7 @@ def download_video(
         LOGGER.error("Unable to create output directory %s: %s", output_dir, exc)
         return None
 
-    template_filename: Optional[str] = None
-    if filename:
-        trimmed = filename.strip()
-        if trimmed:
-            candidate = Path(trimmed)
-            if candidate.suffix:
-                template_filename = trimmed
-            else:
-                template_filename = f"{trimmed}.%(ext)s"
-    template = str(output_dir / (template_filename or "%(title)s.%(ext)s"))
+    template = str(output_dir / (filename or "%(title)s.%(ext)s"))
     LOGGER.debug("Using output template %s", template)
 
     if FFMPEG_AVAILABLE:
@@ -222,13 +106,6 @@ def download_video(
             "no_warnings": True,
         }
 
-    youtube_clients: Tuple[str, ...] = ("android", "web")
-    ydl_opts["extractor_args"] = {"youtube": {"player_client": youtube_clients}}
-    ydl_opts.setdefault("http_headers", {})["User-Agent"] = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
-    )
-
     if cookies_path:
         cookies_path = Path(cookies_path)
         if cookies_path.exists():
@@ -250,37 +127,6 @@ def download_video(
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             LOGGER.debug("Executing yt-dlp with options: %s", ydl_opts)
-            clip_start_seconds: Optional[float] = None
-            clip_end_seconds: Optional[float] = None
-
-            if clip_start is not None:
-                try:
-                    clip_start_seconds = float(clip_start)
-                except (TypeError, ValueError):
-                    LOGGER.error("Invalid clip start value %s; must be numeric seconds.", clip_start)
-                    return None
-                if clip_start_seconds < 0:
-                    LOGGER.error("Clip start time must be zero or positive.")
-                    return None
-
-            if clip_end is not None:
-                try:
-                    clip_end_seconds = float(clip_end)
-                except (TypeError, ValueError):
-                    LOGGER.error("Invalid clip end value %s; must be numeric seconds.", clip_end)
-                    return None
-                if clip_end_seconds <= 0:
-                    LOGGER.error("Clip end time must be greater than zero.")
-                    return None
-
-            if (
-                clip_start_seconds is not None
-                and clip_end_seconds is not None
-                and clip_end_seconds <= clip_start_seconds
-            ):
-                LOGGER.error("Clip end time must be greater than clip start time.")
-                return None
-
             info = ydl.extract_info(url, download=True)
             requested = info.get("requested_downloads")
             if requested:
@@ -292,41 +138,7 @@ def download_video(
                 if ext:
                     file_path = file_path.with_suffix(f".{ext}")
                 LOGGER.debug("Derived file path %s using metadata", file_path)
-            if file_path.suffix == "":
-                info_ext = info.get("ext")
-                if info_ext:
-                    info_ext = info_ext.lstrip(".")
-                inferred_ext = None
-                if requested and requested[0].get("ext"):
-                    inferred_ext = requested[0]["ext"].lstrip(".")
-                elif info_ext:
-                    inferred_ext = info_ext
-                if inferred_ext:
-                    target_with_ext = file_path.with_suffix(f".{inferred_ext}")
-                    try:
-                        file_path.rename(target_with_ext)
-                        file_path = target_with_ext
-                        LOGGER.debug("Renamed download to include extension: %s", file_path)
-                    except OSError as exc:
-                        LOGGER.warning("Failed to rename %s with extension %s: %s", file_path, inferred_ext, exc)
-                else:
-                    LOGGER.warning("Downloaded file %s has no extension and one could not be inferred.", file_path)
-
             LOGGER.info("Downloaded %s -> %s", url, file_path)
-
-            if clip_start_seconds is not None or clip_end_seconds is not None:
-                LOGGER.info(
-                    "Clipping downloaded file %s (start=%s, end=%s)",
-                    file_path,
-                    clip_start_seconds,
-                    clip_end_seconds,
-                )
-                clipped_path = _clip_media(file_path, clip_start_seconds, clip_end_seconds)
-                if clipped_path is None:
-                    LOGGER.error("Clipping failed; keeping original download but reporting failure.")
-                    return None
-                file_path = clipped_path
-
             return file_path
     except yt_dlp.utils.DownloadError as err:
         message = str(err)
