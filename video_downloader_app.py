@@ -690,6 +690,21 @@ if submitted:
 st.divider()
 st.header("Batch Download from CSV")
 
+sidebar = st.sidebar
+sidebar.header("Batch Inputs")
+sidebar.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
+csv_file = sidebar.file_uploader(
+    "CSV file with URLs",
+    type=["csv"],
+    help="Upload a CSV containing a column named URL, Link, or Links.",
+)
+batch_cookies_file = sidebar.file_uploader(
+    "Cookies file for all rows (optional)",
+    type=["txt", "json", "cookies"],
+    help="Upload cookies to use for every URL in the CSV batch.",
+    key="csv_cookies",
+)
+
 batch_results = st.session_state.get("batch_results")
 if batch_results:
     _display_batch_results(batch_results)
@@ -697,17 +712,6 @@ if batch_results:
 processing_triggered = False
 
 with st.form("csv_download_form"):
-    csv_file = st.file_uploader(
-        "CSV file with URLs",
-        type=["csv"],
-        help="Upload a CSV containing a column named URL, Link, or Links.",
-    )
-    batch_cookies_file = st.file_uploader(
-        "Cookies file for all rows (optional)",
-        type=["txt", "json", "cookies"],
-        help="Upload cookies to use for every URL in the CSV batch.",
-        key="csv_cookies",
-    )
     pause_after = st.number_input(
         "Process rows then pause (0 = run all)",
         min_value=0,
@@ -835,5 +839,4 @@ st.write(
     "This downloader relies on yt-dlp, so any site supported by yt-dlp should work, "
     "provided the content is publicly accessible and not blocked by the host."
 )
-
 
