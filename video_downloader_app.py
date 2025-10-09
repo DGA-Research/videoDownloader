@@ -73,46 +73,53 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     download_map = {item["row"]: item for item in downloadable_items or []}
 
     if results:
-        table_container = st.container()
-        header_cols = table_container.columns([1, 3, 2, 4, 2])
-        header_cols[0].markdown("**Row**")
-        header_cols[1].markdown("**URL**")
-        header_cols[2].markdown("**Status**")
-        header_cols[3].markdown("**Detail**")
-        header_cols[4].markdown("**Download**")
+        with st.container():
+            st.markdown(
+                '<div style="max-height: 360px; overflow-y: auto; padding-right: 8px;">',
+                unsafe_allow_html=True,
+            )
+            table_container = st.container()
+            header_cols = table_container.columns([1, 3, 2, 4, 2])
+            header_cols[0].markdown("**Row**")
+            header_cols[1].markdown("**URL**")
+            header_cols[2].markdown("**Status**")
+            header_cols[3].markdown("**Detail**")
+            header_cols[4].markdown("**Download**")
 
-        for entry in results:
-            row_number = entry.get("Row", "")
-            cols = table_container.columns([1, 3, 2, 4, 2])
-            cols[0].write(row_number)
-            cols[1].write(entry.get("URL", ""))
-            cols[2].write(entry.get("Status", ""))
-            cols[3].write(entry.get("Detail", ""))
+            for entry in results:
+                row_number = entry.get("Row", "")
+                cols = table_container.columns([1, 3, 2, 4, 2])
+                cols[0].write(row_number)
+                cols[1].write(entry.get("URL", ""))
+                cols[2].write(entry.get("Status", ""))
+                cols[3].write(entry.get("Detail", ""))
 
-            download_cell = cols[4]
-            status_lower = str(entry.get("Status", "")).strip().lower()
-            if status_lower in COMPLETED_STATUS_VALUES and row_number in download_map:
-                download_info = download_map[row_number]
-                saved_path = Path(download_info.get("path", ""))
-                display_name = download_info.get("display_name") or saved_path.name
-                if saved_path.exists():
-                    try:
-                        file_bytes = saved_path.read_bytes()
-                        suffix = saved_path.suffix.lower()
-                        mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-                        download_cell.download_button(
-                            "Download",
-                            data=file_bytes,
-                            file_name=saved_path.name,
-                            mime=mime,
-                            key=f"table_download_{row_number}",
-                        )
-                    except OSError as exc:
-                        download_cell.write(f"Unavailable ({exc})")
+                download_cell = cols[4]
+                status_lower = str(entry.get("Status", "")).strip().lower()
+                if status_lower in COMPLETED_STATUS_VALUES and row_number in download_map:
+                    download_info = download_map[row_number]
+                    saved_path = Path(download_info.get("path", ""))
+                    display_name = download_info.get("display_name") or saved_path.name
+                    if saved_path.exists():
+                        try:
+                            file_bytes = saved_path.read_bytes()
+                            suffix = saved_path.suffix.lower()
+                            mime = MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
+                            download_cell.download_button(
+                                "Download",
+                                data=file_bytes,
+                                file_name=saved_path.name,
+                                mime=mime,
+                                key=f"table_download_{row_number}",
+                            )
+                        except OSError as exc:
+                            download_cell.write(f"Unavailable ({exc})")
+                    else:
+                        download_cell.write("File missing")
                 else:
-                    download_cell.write("File missing")
-            else:
-                download_cell.write("—")
+                    download_cell.write("—")
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
     paused_after = data.get("paused_after") or 0
     if paused_after:
@@ -227,7 +234,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         st.session_state["batch_live_counts_text"] = None
         status_placeholder.empty()
 
-        log_placeholder = st.empty()
+        log_placeholder = None
 
         results = []
         downloadable_items = []
@@ -269,12 +276,13 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             status_placeholder.markdown(f"{row_line}\n\n{counts_line}")
             st.session_state["batch_live_row_text"] = row_line
             st.session_state["batch_live_counts_text"] = counts_line
-            log_lines = log_buffer.getvalue().strip().splitlines()
-            if log_lines:
-                recent = "\n".join(log_lines[-12:])
-                log_placeholder.text(recent)
-            else:
-                log_placeholder.text("Logs will appear here while the batch runs.")
+            if log_placeholder:
+                log_lines = log_buffer.getvalue().strip().splitlines()
+                if log_lines:
+                    recent = "\n".join(log_lines[-12:])
+                    log_placeholder.text(recent)
+                else:
+                    log_placeholder.text("Logs will appear here while the batch runs.")
 
         if start_index >= total:
             st.session_state["batch_live_active"] = False
@@ -436,10 +444,8 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             status_placeholder.info(
                 f"Batch paused after {pause_limit} row(s). Use the sidebar continue controls to process more rows."
             )
-            log_placeholder.text(log_buffer.getvalue().strip())
         else:
             status_placeholder.empty()
-            log_placeholder.empty()
     finally:
         st.session_state["batch_live_active"] = False
         st.session_state["batch_live_row_text"] = None
