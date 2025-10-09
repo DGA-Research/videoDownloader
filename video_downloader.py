@@ -97,6 +97,8 @@ def download_video(
     cookies_path: Optional[Path] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
+    clip_start: Optional[float] = None,
+    clip_end: Optional[float] = None,
 ) -> Optional[Path]:
     LOGGER.info("Starting download for %s", url)
     output_dir = Path(output_dir)
@@ -158,6 +160,39 @@ def download_video(
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             LOGGER.debug("Executing yt-dlp with options: %s", ydl_opts)
+            clip_start_seconds: Optional[float] = None
+            clip_end_seconds: Optional[float] = None
+
+
+            if clip_start is not None:
+                try:
+                    clip_start_seconds = float(clip_start)
+                except (TypeError, ValueError):
+                    LOGGER.error("Invalid clip start value %s; must be numeric seconds.", clip_start)
+                    return None
+                if clip_start_seconds < 0:
+                    LOGGER.error("Clip start time must be zero or positive.")
+                    return None
+
+            if clip_end is not None:
+                try:
+                    clip_end_seconds = float(clip_end)
+                except (TypeError, ValueError):
+                    LOGGER.error("Invalid clip end value %s; must be numeric seconds.", clip_end)
+                    return None
+                if clip_end_seconds <= 0:
+                    LOGGER.error("Clip end time must be greater than zero.")
+                    return None
+
+            if (
+                clip_start_seconds is not None
+                and clip_end_seconds is not None
+                and clip_end_seconds <= clip_start_seconds
+            ):
+                LOGGER.error("Clip end time must be greater than clip start time.")
+                return None
+
+            
             info = ydl.extract_info(url, download=True)
             requested = info.get("requested_downloads")
             if requested:
@@ -170,6 +205,20 @@ def download_video(
                     file_path = file_path.with_suffix(f".{ext}")
                 LOGGER.debug("Derived file path %s using metadata", file_path)
             LOGGER.info("Downloaded %s -> %s", url, file_path)
+
+            if clip_start_seconds is not None or clip_end_seconds is not None:
+                LOGGER.info(
+                    "Clipping downloaded file %s (start=%s, end=%s)",
+                    file_path,
+                    clip_start_seconds,
+                    clip_end_seconds,
+                )
+                clipped_path = _clip_media(file_path, clip_start_seconds, clip_end_seconds)
+                if clipped_path is None:
+                    LOGGER.error("Clipping failed; keeping original download but reporting failure.")
+                    return None
+                file_path = clipped_path
+
             return file_path
     except yt_dlp.utils.DownloadError as err:
         message = str(err)
@@ -219,4 +268,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
