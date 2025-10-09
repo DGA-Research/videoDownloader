@@ -3,9 +3,11 @@ Minimal video downloader for sites supported by yt-dlp.
 """
 import logging
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
+
 
 try:
     import yt_dlp
@@ -341,6 +343,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 
