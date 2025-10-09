@@ -89,6 +89,55 @@ def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
         return None
     return numeric
 
+def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> Optional[Path]:
+    if not FFMPEG_AVAILABLE:
+        LOGGER.error("Clipping requested but ffmpeg is not available.")
+        return None
+    if not source.exists():
+        LOGGER.error("Cannot clip %s because the file does not exist.", source)
+        return None
+
+    temp_target = _next_clip_path(source)
+    command = [str(FFMPEG_PATH or "ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
+    if start is not None:
+        command += ["-ss", _format_ffmpeg_time(start)]
+    command += ["-i", str(source)]
+
+    if end is not None:
+        duration = end if start is None else end - start
+        if duration <= 0:
+            LOGGER.error("Clip end time must be greater than clip start time.")
+            return None
+        command += ["-t", _format_ffmpeg_time(duration)]
+
+    command += ["-c", "copy", str(temp_target)]
+    LOGGER.debug("Running ffmpeg clip command: %s", command)
+
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        stdout = (completed.stdout or "").strip()
+        LOGGER.error("ffmpeg failed to clip %s: %s", source, stderr or stdout or "Unknown error.")
+        if temp_target.exists():
+            try:
+                temp_target.unlink()
+            except OSError:
+                LOGGER.warning("Failed to remove temporary clip file at %s", temp_target)
+        return None
+
+    try:
+        temp_target.replace(source)
+    except OSError as exc:
+        LOGGER.error("Failed to replace original file with clipped media: %s", exc)
+        try:
+            temp_target.unlink()
+        except OSError:
+            LOGGER.warning("Failed to remove temporary clip file at %s", temp_target)
+        return None
+
+    return source
+
+
 
 def download_video(
     url: str,
@@ -268,5 +317,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
