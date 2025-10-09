@@ -200,6 +200,26 @@ def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> O
     return source
 
 
+def _build_output_template(output_dir: Path, filename: Optional[str]) -> str:
+    """Ensure a custom filename still includes an extension placeholder."""
+    if not filename:
+        return str(output_dir / "%(title)s.%(ext)s")
+
+    cleaned = filename.strip()
+    if not cleaned:
+        return str(output_dir / "%(title)s.%(ext)s")
+
+    if "%(ext" in cleaned:
+        template_name = cleaned
+    else:
+        candidate = Path(cleaned)
+        if candidate.suffix:
+            template_name = str(candidate)
+        else:
+            template_name = f"{cleaned}.%(ext)s"
+
+    return str(output_dir / template_name)
+
 
 def _log_download_error(url: str, message: str) -> None:
     """Log download errors with additional ffmpeg guidance when relevant."""
@@ -231,7 +251,7 @@ def download_video(
         LOGGER.error("Unable to create output directory %s: %s", output_dir, exc)
         return None
 
-    template = str(output_dir / (filename or "%(title)s.%(ext)s"))
+    template = _build_output_template(output_dir, filename)
     LOGGER.debug("Using output template %s", template)
 
     resolved_cookies_path: Optional[Path] = None
