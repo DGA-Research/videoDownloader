@@ -103,11 +103,7 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
             step=1,
             key="batch_continue_chunk_size",
         )
-        next_skip_completed = continue_controls.checkbox(
-            "Skip rows already marked as downloaded",
-            value=bool(skip_completed_default),
-            key="batch_continue_skip_completed",
-        )
+        next_skip_completed = bool(st.session_state.get("batch_skip_completed_toggle", skip_completed_default))
         if continue_controls.button("Continue batch", key="batch_continue_button"):
             st.session_state["continue_requested"] = True
             st.session_state["continue_chunk_size"] = int(next_chunk)
@@ -118,23 +114,29 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
         st.text_area("Batch logs", log_output, height=240, key="csv_batch_logs")
 
     updated_csv = data.get("updated_csv")
-    if updated_csv:
-        st.download_button(
+    zip_bytes = data.get("zip_bytes")
+    if updated_csv and controls_container:
+        controls_container.download_button(
             "Download updated CSV",
             data=updated_csv,
             file_name=data.get("updated_csv_filename") or "batch_results.csv",
             mime="text/csv",
             key="batch_updated_csv",
         )
-
-    zip_bytes = data.get("zip_bytes")
-    if zip_bytes:
-        st.download_button(
+    if zip_bytes and controls_container:
+        controls_container.download_button(
             "Download all clips (.zip)",
             data=zip_bytes,
             file_name=data.get("zip_filename") or "clips.zip",
             mime="application/zip",
             key="batch_clips_zip",
+        )
+        controls_container.download_button(
+            "Download all clips (.zip)",
+            data=zip_bytes,
+            file_name=data.get("zip_filename") or "clips.zip",
+            mime="application/zip",
+            key="batch_clips_zip_secondary",
         )
 
 
@@ -725,6 +727,7 @@ with batch_download_expander:
         "Skip rows already marked as downloaded in the CSV",
         value=True,
         help="When enabled, rows whose download status column already indicates success are not processed again.",
+        key="batch_skip_completed_toggle",
     )
     if batch_locked:
         csv_submitted = False
@@ -848,4 +851,6 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
+
+
 
