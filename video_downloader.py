@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-
 try:
     import yt_dlp
 except ImportError:
@@ -60,6 +59,7 @@ def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=resolved, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
     LOGGER.setLevel(resolved)
 
+
 def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
     """Parse a human-friendly time string (e.g. 1:23:45) into seconds."""
     if value is None:
@@ -92,7 +92,6 @@ def parse_time_to_seconds(value: Optional[str]) -> Optional[float]:
     return numeric
 
 
-
 def _format_ffmpeg_time(seconds: float) -> str:
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -104,6 +103,7 @@ def _format_ffmpeg_time(seconds: float) -> str:
         if secs_str == "":
             secs_str = "00"
     return f"{hours:02d}:{minutes:02d}:{secs_str}"
+
 
 def _next_clip_path(source: Path) -> Path:
     suffix = source.suffix or ".mp4"
@@ -164,7 +164,6 @@ def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> O
     return source
 
 
-
 def download_video(
     url: str,
     output_dir: Path,
@@ -185,7 +184,16 @@ def download_video(
         LOGGER.error("Unable to create output directory %s: %s", output_dir, exc)
         return None
 
-    template = str(output_dir / (filename or "%(title)s.%(ext)s"))
+    template_filename: Optional[str] = None
+    if filename:
+        trimmed = filename.strip()
+        if trimmed:
+            candidate = Path(trimmed)
+            if candidate.suffix:
+                template_filename = trimmed
+            else:
+                template_filename = f"{trimmed}.%(ext)s"
+    template = str(output_dir / (template_filename or "%(title)s.%(ext)s"))
     LOGGER.debug("Using output template %s", template)
 
     if FFMPEG_AVAILABLE:
@@ -238,7 +246,6 @@ def download_video(
             clip_start_seconds: Optional[float] = None
             clip_end_seconds: Optional[float] = None
 
-
             if clip_start is not None:
                 try:
                     clip_start_seconds = float(clip_start)
@@ -267,7 +274,6 @@ def download_video(
                 LOGGER.error("Clip end time must be greater than clip start time.")
                 return None
 
-            
             info = ydl.extract_info(url, download=True)
             requested = info.get("requested_downloads")
             if requested:
@@ -279,6 +285,26 @@ def download_video(
                 if ext:
                     file_path = file_path.with_suffix(f".{ext}")
                 LOGGER.debug("Derived file path %s using metadata", file_path)
+            if file_path.suffix == "":
+                info_ext = info.get("ext")
+                if info_ext:
+                    info_ext = info_ext.lstrip(".")
+                inferred_ext = None
+                if requested and requested[0].get("ext"):
+                    inferred_ext = requested[0]["ext"].lstrip(".")
+                elif info_ext:
+                    inferred_ext = info_ext
+                if inferred_ext:
+                    target_with_ext = file_path.with_suffix(f".{inferred_ext}")
+                    try:
+                        file_path.rename(target_with_ext)
+                        file_path = target_with_ext
+                        LOGGER.debug("Renamed download to include extension: %s", file_path)
+                    except OSError as exc:
+                        LOGGER.warning("Failed to rename %s with extension %s: %s", file_path, inferred_ext, exc)
+                else:
+                    LOGGER.warning("Downloaded file %s has no extension and one could not be inferred.", file_path)
+
             LOGGER.info("Downloaded %s -> %s", url, file_path)
 
             if clip_start_seconds is not None or clip_end_seconds is not None:
@@ -343,8 +369,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-
-
