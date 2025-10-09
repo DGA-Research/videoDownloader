@@ -41,9 +41,10 @@ def _display_batch_results(data: dict) -> None:
     if paused_after:
         st.info(f"Batch processing paused after {paused_after} row(s) per user setting.")
 
-    success_count = data.get("success_count", 0)
-    failure_count = data.get("failure_count", 0)
-    skipped_count = data.get("skipped_count", 0)
+    summary_counts = data.get("summary_counts") or st.session_state.get("batch_summary_counts") or {}
+    success_count = summary_counts.get("success", data.get("success_count", 0))
+    failure_count = summary_counts.get("failure", data.get("failure_count", 0))
+    skipped_count = summary_counts.get("skipped", data.get("skipped_count", 0))
 
     if success_count:
         st.success(f"Downloaded {success_count} item(s) from the CSV.")
@@ -170,9 +171,11 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
 
         results = []
         downloadable_items = []
-        downloaded_count = 0
-        failed_count = 0
-        skipped_count_run = 0
+
+        summary_counts_state = st.session_state.get("batch_summary_counts") or {}
+        downloaded_total = int(summary_counts_state.get("success", 0))
+        failed_total = int(summary_counts_state.get("failure", 0))
+        skipped_total = int(summary_counts_state.get("skipped", 0))
         pause_triggered = False
         processed_in_run = 0
 
@@ -201,7 +204,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 progress.progress(min(1.0, row_number / total))
             status_placeholder.markdown(
                 f"**Row {row_number}/{total}:** {status_text}\n\n"
-                f"✅ Downloads: {downloaded_count} | ❌ Failures: {failed_count} | ⚪ Skipped: {skipped_count_run}"
+                f"✅ Downloads: {downloaded_total} | ❌ Failures: {failed_total} | ⚪ Skipped: {skipped_total}"
             )
             log_lines = log_buffer.getvalue().strip().splitlines()
             if log_lines:
@@ -231,7 +234,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                                 "Detail": detail_message,
                             }
                         )
-                        skipped_count_run += 1
+                        skipped_total += 1
                         update_placeholders(index, detail_message)
                         context["next_row"] = zero_idx + 1
                         if pause_limit and processed_in_run >= pause_limit:
@@ -252,7 +255,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                             }
                         )
                         set_row_status(row, "skipped", detail_message)
-                        skipped_count_run += 1
+                        skipped_total += 1
                         context["next_row"] = zero_idx + 1
                         update_placeholders(index, detail_message)
                         if pause_limit and processed_in_run >= pause_limit:
@@ -265,7 +268,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                     detail_message = "Missing URL value."
                     results.append({"Row": index, "URL": "", "Status": "skipped", "Detail": detail_message})
                     set_row_status(row, "skipped", detail_message)
-                    skipped_count_run += 1
+                    skipped_total += 1
                     context["next_row"] = zero_idx + 1
                     update_placeholders(index, detail_message)
                     if pause_limit and processed_in_run >= pause_limit:
@@ -314,7 +317,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                         }
                     )
                     set_row_status(row, "failed", detail_message)
-                    failed_count += 1
+                    failed_total += 1
                     context["next_row"] = zero_idx + 1
                     update_placeholders(index, detail_message)
                     if pause_limit and processed_in_run >= pause_limit:
@@ -342,12 +345,12 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                         }
                     )
                     set_row_status(row, "downloaded", detail_message, saved_path)
-                    downloaded_count += 1
+                    downloaded_total += 1
                 else:
                     detail_message = "Download failed."
                     results.append({"Row": index, "URL": url_value, "Status": "failed", "Detail": detail_message})
                     set_row_status(row, "failed", detail_message)
-                    failed_count += 1
+                    failed_total += 1
 
                 context["next_row"] = zero_idx + 1
                 update_placeholders(index, detail_message)
@@ -462,7 +465,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     return batch_results
 
 
-def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict]]:
+def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict], dict]:
     rows = context.get("rows") or []
     url_column = context.get("url_column")
     status_column = context.get("status_column")
@@ -472,11 +475,20 @@ def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict]]:
 
     processed_rows: List[dict] = []
     download_items: List[dict] = []
+    summary_counts = {"success": 0, "failure": 0, "skipped": 0}
 
     for idx, row in enumerate(rows, start=1):
         status = str(row.get(status_column, "")).strip()
         if not status:
             continue
+        status_lower = status.lower()
+        if status_lower in {"downloaded", "success"}:
+            summary_counts["success"] += 1
+        elif status_lower == "failed":
+            summary_counts["failure"] += 1
+        elif status_lower == "skipped":
+            summary_counts["skipped"] += 1
+
         entry = {
             "Row": idx,
             "URL": (row.get(url_column) or "").strip(),
@@ -485,7 +497,7 @@ def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict]]:
         }
         processed_rows.append(entry)
 
-        if status.lower() == "downloaded":
+        if status_lower in {"downloaded", "success"}:
             path_str = row.get(path_column, "")
             if not path_str:
                 continue
@@ -509,17 +521,22 @@ def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict]]:
 
     processed_rows.sort(key=lambda item: item["Row"])
     download_items.sort(key=lambda item: item["row"])
-    return processed_rows, download_items
+    return processed_rows, download_items, summary_counts
 
 
 def _update_batch_history(context: dict, batch_results: dict) -> dict:
-    processed_rows, download_items = _build_history_from_context(context)
+    processed_rows, download_items, summary_counts = _build_history_from_context(context)
     st.session_state["batch_all_results"] = processed_rows
     st.session_state["batch_all_downloads"] = download_items
+    st.session_state["batch_summary_counts"] = summary_counts
 
     batch_results = dict(batch_results)
     batch_results["results"] = processed_rows
     batch_results["downloadable_items"] = download_items
+    batch_results["summary_counts"] = summary_counts
+    batch_results["success_count"] = summary_counts.get("success", 0)
+    batch_results["failure_count"] = summary_counts.get("failure", 0)
+    batch_results["skipped_count"] = summary_counts.get("skipped", 0)
     return batch_results
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
@@ -763,6 +780,7 @@ if csv_submitted:
 
                             st.session_state["batch_all_results"] = []
                             st.session_state["batch_all_downloads"] = []
+                            st.session_state["batch_summary_counts"] = {"success": 0, "failure": 0, "skipped": 0}
 
                             context = {
                                 "rows": rows,
