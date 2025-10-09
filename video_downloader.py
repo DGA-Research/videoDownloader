@@ -24,6 +24,39 @@ _YOUTUBE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
 )
+_MINIMUM_YTDLP_VERSION = (2024, 9, 27)
+
+
+def _parse_version_tuple(raw: str) -> Tuple[int, ...]:
+    """Best-effort conversion of a version string into a comparable tuple."""
+    parts: List[int] = []
+    for fragment in raw.split("."):
+        numeric = "".join(ch for ch in fragment if ch.isdigit())
+        if not numeric:
+            break
+        parts.append(int(numeric))
+    return tuple(parts)
+
+
+_YTDLP_VERSION_STRING = getattr(getattr(yt_dlp, "version", None), "__version__", None) or getattr(
+    yt_dlp, "__version__", "0"
+)
+_YTDLP_VERSION = _parse_version_tuple(_YTDLP_VERSION_STRING)
+if _YTDLP_VERSION and _YTDLP_VERSION < _MINIMUM_YTDLP_VERSION:
+    LOGGER.warning(
+        "yt-dlp %s detected; version %s or newer is recommended for reliable YouTube downloads. "
+        "Upgrade with 'pip install --upgrade yt-dlp'.",
+        _YTDLP_VERSION_STRING,
+        ".".join(str(part) for part in _MINIMUM_YTDLP_VERSION),
+    )
+
+
+def yt_dlp_version_status() -> Tuple[str, str, bool]:
+    """Return (current_version, minimum_required, is_outdated)."""
+    minimum_string = ".".join(str(part) for part in _MINIMUM_YTDLP_VERSION)
+    is_outdated = bool(_YTDLP_VERSION and _YTDLP_VERSION < _MINIMUM_YTDLP_VERSION)
+    return _YTDLP_VERSION_STRING, minimum_string, is_outdated
+
 
 def _locate_ffmpeg() -> Tuple[Optional[Path], bool]:
     """Find ffmpeg either on PATH or via imageio-ffmpeg."""
