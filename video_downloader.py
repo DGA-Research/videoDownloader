@@ -225,7 +225,6 @@ def _build_ydl_options(
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "http_headers": {"User-Agent": _YOUTUBE_USER_AGENT},
     }
     if not use_ffmpeg:
         options.pop("merge_output_format", None)
@@ -242,13 +241,6 @@ def _build_ydl_options(
         options["username"] = username
         if password:
             options["password"] = password
-
-    if cookies_path:
-        extractor_args = {"youtube": {"player_client": ["web"]}}
-    else:
-        extractor_args = {"youtube": {"player_client": ["android", "web"]}}
-
-    options["extractor_args"] = extractor_args
 
     if extra:
         options.update(extra)
@@ -383,21 +375,45 @@ def download_video(
             "ffmpeg not detected; falling back to best available single-file download without merging audio/video."
         )
 
-    attempt_configs = [
+    attempt_configs: List[Tuple[str, Optional[Dict[str, Any]]]] = [
         ("initial", None),
-        ("ipv4", {"forceipv4": True, "http_chunk_size": 1_048_576}),
+        ("android_web", {"extractor_args": {"youtube": {"player_client": ["android", "web"]}}}),
+        ("web_creator", {"extractor_args": {"youtube": {"player_client": ["web_creator", "web"]}}}),
+        ("ios_web", {"extractor_args": {"youtube": {"player_client": ["ios", "web"]}}}),
+        (
+            "ipv4_android",
+            {
+                "forceipv4": True,
+                "http_chunk_size": 1_048_576,
+                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            },
+        ),
     ]
 
     last_error_message: Optional[str] = None
 
     for index, (label, extra_opts) in enumerate(attempt_configs):
         if index > 0:
-            if not (last_error_message and "downloaded file is empty" in last_error_message.lower()):
-                break
             LOGGER.info(
-                "Retrying download for %s forcing IPv4 and chunked transfers after empty file error.",
+                "Retrying download for %s using fallback profile '%s'.",
                 url,
+                label,
             )
+
+        current_extra: Optional[Dict[str, Any]] = None
+        if extra_opts:
+            current_extra = dict(extra_opts)
+            extractor_args = extra_opts.get("extractor_args")
+            if extractor_args:
+                yt_args = dict(extractor_args.get("youtube", {}))
+                clients = list(yt_args.get("player_client", []))
+                if resolved_cookies_path:
+                    clients = [client for client in clients if client.lower() != "android"]
+                if clients:
+                    yt_args["player_client"] = clients
+                    current_extra["extractor_args"] = {"youtube": yt_args}
+                else:
+                    current_extra.pop("extractor_args", None)
 
         ydl_opts = _build_ydl_options(
             template,
@@ -405,7 +421,7 @@ def download_video(
             resolved_cookies_path,
             auth_username,
             auth_password,
-            extra_opts,
+            current_extra,
         )
 
         try:
@@ -426,11 +442,21 @@ def download_video(
             return file_path
         except yt_dlp.utils.DownloadError as err:
             last_error_message = str(err)
-            if index == 0 and "downloaded file is empty" in last_error_message.lower():
-                LOGGER.warning(
-                    "Initial download attempt for %s resulted in an empty file. Retrying with IPv4 fallback.",
-                    url,
-                )
+            message_lower = last_error_message.lower()
+            empty_file = "downloaded file is empty" in message_lower
+            forbidden = "http error 403" in message_lower or "forbidden" in message_lower
+
+            if index < len(attempt_configs) - 1 and (empty_file or forbidden):
+                if empty_file:
+                    LOGGER.warning(
+                        "Download attempt for %s resulted in an empty file. Trying alternative client profile.",
+                        url,
+                    )
+                else:
+                    LOGGER.warning(
+                        "Download attempt for %s hit HTTP 403 Forbidden. Trying alternative client profile.",
+                        url,
+                    )
                 continue
             _log_download_error(url, last_error_message)
             return None
