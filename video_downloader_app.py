@@ -74,12 +74,26 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     download_map = {item["row"]: item for item in downloadable_items or []}
 
     if results:
+        st.markdown(
+            """
+            <style>
+            .batch-results-scroll {
+                max-height: 360px;
+                overflow-y: auto;
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+            }
+            .batch-results-scroll > div[data-testid="stHorizontalBlock"] {
+                margin-bottom: 0 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
         table_container = st.container()
         with table_container:
-            st.markdown(
-                '<div style="max-height: 360px; overflow-y: auto; padding-right: 8px;">',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="batch-results-scroll">', unsafe_allow_html=True)
             header_cols = st.columns([1, 3, 2, 4, 2])
             header_cols[0].markdown("**Row**")
             header_cols[1].markdown("**URL**")
