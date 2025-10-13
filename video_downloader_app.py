@@ -200,6 +200,10 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
                     st.session_state["batch_live_row_text"] = None
                     st.session_state["batch_live_counts_text"] = None
 
+    retry_error = st.session_state.pop("batch_retry_error", None)
+    if retry_error:
+        st.warning(retry_error)
+
     results = data.get("results") or st.session_state.get("batch_all_results") or []
     downloadable_items = data.get("downloadable_items") or st.session_state.get("batch_all_downloads") or []
     download_map = {item["row"]: item for item in downloadable_items or []}
@@ -272,7 +276,31 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
                     else:
                         download_cell.write("File missing")
                 else:
-                    download_cell.write("—")
+                    retry_row_number: Optional[int] = None
+                    if isinstance(row_number, int):
+                        retry_row_number = row_number
+                    else:
+                        try:
+                            retry_row_number = int(str(row_number))
+                        except (TypeError, ValueError):
+                            retry_row_number = None
+
+                    can_retry = (
+                        status_lower in {"failed", "skipped"}
+                        and retry_row_number is not None
+                        and context is not None
+                    )
+                    if can_retry:
+                        if st.session_state.get("batch_live_active", False):
+                            download_cell.write("Processing…")
+                        else:
+                            if download_cell.button("Try again", key=f"table_retry_{retry_row_number}"):
+                                st.session_state["batch_retry_target"] = retry_row_number
+                                st.session_state["batch_live_active"] = True
+                                st.session_state["batch_live_row_text"] = None
+                                st.session_state["batch_live_counts_text"] = None
+                    else:
+                        download_cell.write("\u2014")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -346,13 +374,24 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
 
 
 
-def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Optional[dict]:
+def _process_batch(
+    context: dict,
+    pause_limit: int,
+    skip_completed: bool,
+    retry_row: Optional[int] = None,
+) -> Optional[dict]:
     rows = context.get("rows") or []
     total = len(rows)
-    start_index = min(context.get("next_row", 0), total)
+    original_next_row = context.get("next_row", 0)
+    start_index = min(original_next_row, total)
+    forced_row_index: Optional[int] = None
+    if retry_row is not None and total:
+        forced_row_index = max(0, min(total - 1, int(retry_row) - 1))
+        start_index = forced_row_index
     context["next_row"] = start_index
     context["skip_completed_default"] = skip_completed
     context["last_pause_limit"] = pause_limit
+    context["completed"] = False
 
     log_buffer = StringIO()
     handler = logging.StreamHandler(log_buffer)
@@ -372,6 +411,8 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     cookies_bytes = context.get("cookies_bytes")
     cookies_name = context.get("cookies_name") or "cookies.txt"
     skip_requested = st.session_state.pop("batch_skip_requested", False)
+    if forced_row_index is not None:
+        skip_requested = False
     try:
         if cookies_bytes:
             suffix = Path(cookies_name).suffix or ".txt"
@@ -454,6 +495,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 row = rows[zero_idx]
                 index = zero_idx + 1
                 processed_in_run += 1
+                is_forced_row = forced_row_index is not None and zero_idx == forced_row_index
 
                 if skip_requested:
                     detail_message = "Skipped by user request."
@@ -475,7 +517,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                     skip_requested = False
                     break
 
-                if skip_completed:
+                if skip_completed and not is_forced_row:
                     existing_status = str(row.get(status_column, "")).strip().lower()
                     existing_path = row.get(path_column)
                     if existing_status in COMPLETED_STATUS_VALUES and existing_path:
@@ -497,7 +539,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                             break
                         continue
 
-                if skip_column:
+                if skip_column and not is_forced_row:
                     skip_value = str(row.get(skip_column, "")).strip().lower()
                     if skip_value in {"1", "true", "yes", "skip"}:
                         detail_message = "Marked to skip via CSV."
@@ -610,8 +652,14 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 context["next_row"] = zero_idx + 1
                 update_placeholders(index, detail_message)
 
+                if is_forced_row:
+                    pause_triggered = True
+                    paused_reason = "retry"
+                    break
+
                 if pause_limit and processed_in_run >= pause_limit:
                     pause_triggered = True
+                    paused_reason = "limit"
                     update_placeholders(index, f"Paused automatically after {pause_limit} row(s).")
                     break
 
@@ -627,6 +675,10 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             if paused_reason == "skip":
                 status_placeholder.info(
                     "Batch paused after skipping the current row per user request. Use the sidebar controls to resume."
+                )
+            elif paused_reason == "retry":
+                status_placeholder.info(
+                    "Batch paused after retrying the selected row. Use the sidebar controls to continue."
                 )
             else:
                 status_placeholder.info(
@@ -647,6 +699,10 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 temp_cookie_path.unlink()
             except OSError:
                 LOGGER.warning("Failed to remove temporary cookies file at %s", temp_cookie_path)
+
+    if forced_row_index is not None:
+        next_candidate = context.get("next_row", 0)
+        context["next_row"] = max(original_next_row, next_candidate)
 
     fieldnames = context.get("fieldnames") or []
     status_column = context["status_column"]
@@ -739,6 +795,8 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     batch_log_output = log_buffer.getvalue().strip()
     remaining_rows = max(0, total - context.get("next_row", total))
 
+    context["completed"] = context.get("next_row", total) >= total
+
     batch_results = {
         "results": results,
         "downloadable_items": downloadable_items,
@@ -746,7 +804,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         "failure_count": failure_count,
         "skipped_count": skipped_count,
         "log_output": batch_log_output,
-        "paused_after": pause_limit if (pause_triggered and paused_reason != "skip") else 0,
+        "paused_after": pause_limit if (pause_triggered and paused_reason == "limit") else 0,
         "paused_reason": paused_reason,
         "updated_csv": updated_csv_bytes,
         "updated_csv_filename": updated_csv_name,
@@ -1023,7 +1081,12 @@ batch_download_expander = st.sidebar.expander("Batch Downloads", expanded=True)
 with batch_download_expander:
     st.caption("Upload your batch CSV and optional cookies used for authenticated downloads.")
     batch_context = st.session_state.get("batch_context")
-    batch_locked = bool(batch_context and batch_context.get("next_row", 0) > 0)
+    total_context_rows = len(batch_context.get("rows") or []) if batch_context else 0
+    batch_locked = bool(
+        batch_context
+        and not batch_context.get("completed", False)
+        and 0 < batch_context.get("next_row", 0) < total_context_rows
+    )
     csv_file = st.file_uploader(
         "CSV file with URLs",
         type=["csv"],
@@ -1079,6 +1142,34 @@ if batch_results:
     _display_batch_results(batch_results, batch_download_expander)
 
 processing_triggered = False
+retry_target_value = st.session_state.pop("batch_retry_target", None)
+if retry_target_value is not None:
+    try:
+        retry_target_index = int(retry_target_value)
+    except (TypeError, ValueError):
+        retry_target_index = None
+    if retry_target_index is None:
+        st.session_state["batch_retry_error"] = "Retry failed: invalid row identifier."
+        st.session_state["batch_live_active"] = False
+    else:
+        context = st.session_state.get("batch_context")
+        if context:
+            total_retry_rows = len(context.get("rows") or [])
+            if total_retry_rows:
+                bounded_index = max(1, min(total_retry_rows, retry_target_index))
+                retry_results = _process_batch(context, 0, False, retry_row=bounded_index)
+                if retry_results is not None:
+                    retry_results = _update_batch_history(context, retry_results)
+                    st.session_state["batch_results"] = retry_results
+                    batch_results = retry_results
+                    processing_triggered = True
+            else:
+                st.session_state["batch_retry_error"] = "Retry failed: batch has no rows to process."
+                st.session_state["batch_live_active"] = False
+        else:
+            st.session_state["batch_retry_error"] = "Retry failed: batch context is not available."
+            st.session_state["batch_live_active"] = False
+
 if st.session_state.get("batch_skip_requested"):
     context = st.session_state.get("batch_context")
     if context:
@@ -1090,10 +1181,9 @@ if st.session_state.get("batch_skip_requested"):
             st.session_state["batch_results"] = skip_results
             batch_results = skip_results
             processing_triggered = True
-            if skip_results.get("remaining_rows") == 0:
-                st.session_state.pop("batch_context", None)
     else:
         st.session_state["batch_skip_requested"] = False
+        st.session_state["batch_live_active"] = False
 
 pause_after = int(pause_after_sidebar)
 
@@ -1168,6 +1258,7 @@ if csv_submitted:
                                 "timestamp_column": timestamp_column,
                                 "filename_candidates": ("File Name", "Filename", "file_name", "Name"),
                                 "next_row": 0,
+                                "completed": False,
                                 "source_filename": getattr(csv_file, "name", "batch.csv"),
                                 "cookies_bytes": batch_cookies_file.getvalue() if batch_cookies_file else None,
                                 "cookies_name": getattr(batch_cookies_file, "name", None),
@@ -1179,8 +1270,6 @@ if csv_submitted:
                                 batch_results = _update_batch_history(context, batch_results)
                                 st.session_state["batch_results"] = batch_results
                                 processing_triggered = True
-                                if batch_results.get("remaining_rows") == 0:
-                                    st.session_state.pop("batch_context", None)
 
 if st.session_state.pop("continue_requested", False):
     context = st.session_state.get("batch_context")
@@ -1197,12 +1286,9 @@ if st.session_state.pop("continue_requested", False):
             batch_results = _update_batch_history(context, batch_results)
             st.session_state["batch_results"] = batch_results
             processing_triggered = True
-            if batch_results.get("remaining_rows") == 0:
-                st.session_state.pop("batch_context", None)
     else:
         st.warning("No batch is currently loaded. Upload a CSV to start a new batch.")
 
 if processing_triggered:
     st.rerun()
-
 
