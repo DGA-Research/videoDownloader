@@ -190,7 +190,7 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
         rows_for_skip = context.get("rows") or []
         next_row_index = min(context.get("next_row", 0), len(rows_for_skip))
         if next_row_index < len(rows_for_skip):
-            skip_label = f"Skip current row (#{next_row_index + 1} of {len(rows_for_skip)})"
+            skip_label = f"Skip to next"
             if skip_pending:
                 st.caption("Skip requested for the current row. Waiting for processing to pause.")
             else:
@@ -1204,4 +1204,5 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
+
 
