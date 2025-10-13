@@ -25,6 +25,7 @@ _YOUTUBE_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
 )
 _MINIMUM_YTDLP_VERSION = (2024, 9, 27)
+_MAX_FILENAME_CHARS = 80
 
 
 def _parse_version_tuple(raw: str) -> Tuple[int, ...]:
@@ -200,13 +201,22 @@ def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> O
     return source
 
 
-MAX_TITLE_COMPONENT = 80
+def _trim_name_component(text: str, max_chars: int = _MAX_FILENAME_CHARS) -> str:
+    """Trim a filename component to a safe length without breaking UTF-8."""
+    if max_chars <= 0:
+        return text
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_chars:
+        return text
+    trimmed = encoded[:max_chars]
+    safe_text = trimmed.decode("utf-8", errors="ignore").rstrip(" .-_")
+    return safe_text or text[:max_chars]
 
 
 def _build_output_template(output_dir: Path, filename: Optional[str]) -> str:
     """Ensure a custom filename still includes an extension placeholder."""
     if not filename:
-        return str(output_dir / f"%(title).{MAX_TITLE_COMPONENT}B-%(id)s.%(ext)s")
+        return str(output_dir / "%(title)s.%(ext)s")
 
     cleaned = filename.strip()
     if not cleaned:
@@ -215,11 +225,12 @@ def _build_output_template(output_dir: Path, filename: Optional[str]) -> str:
     if "%(ext" in cleaned:
         template_name = cleaned
     else:
-        candidate = Path(cleaned)
+        trimmed_cleaned = _trim_name_component(cleaned, _MAX_FILENAME_CHARS)
+        candidate = Path(trimmed_cleaned)
         if candidate.suffix:
             template_name = str(candidate)
         else:
-            template_name = f"{cleaned}.%(ext)s"
+            template_name = f"{trimmed_cleaned}.%(ext)s"
 
     return str(output_dir / template_name)
 
@@ -318,6 +329,7 @@ def download_video(
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "trim_file_name": _MAX_FILENAME_CHARS,
     }
     if FFMPEG_AVAILABLE:
         ydl_opts["format"] = "bv*+ba/b"
