@@ -184,6 +184,22 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
         if progress_slot:
             progress_slot.empty()
 
+    context = st.session_state.get("batch_context")
+    skip_pending = st.session_state.get("batch_skip_requested", False)
+    if context:
+        rows_for_skip = context.get("rows") or []
+        next_row_index = min(context.get("next_row", 0), len(rows_for_skip))
+        if next_row_index < len(rows_for_skip):
+            skip_label = f"Skip current row (#{next_row_index + 1} of {len(rows_for_skip)})"
+            if skip_pending:
+                st.caption("Skip requested for the current row. Waiting for processing to pause.")
+            else:
+                if st.button(skip_label, key="batch_skip_button"):
+                    st.session_state["batch_skip_requested"] = True
+                    st.session_state["batch_live_active"] = True
+                    st.session_state["batch_live_row_text"] = None
+                    st.session_state["batch_live_counts_text"] = None
+
     results = data.get("results") or st.session_state.get("batch_all_results") or []
     downloadable_items = data.get("downloadable_items") or st.session_state.get("batch_all_downloads") or []
     download_map = {item["row"]: item for item in downloadable_items or []}
@@ -260,8 +276,11 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
 
             st.markdown("</div>", unsafe_allow_html=True)
 
+    paused_reason = data.get("paused_reason")
     paused_after = data.get("paused_after") or 0
-    if paused_after:
+    if paused_reason == "skip":
+        st.info("Batch paused after skipping the current row per user request.")
+    elif paused_after:
         st.info(f"Batch processing paused after {paused_after} row(s) per user setting.")
     if success_count:
         st.success(f"Downloaded {success_count} item(s) from the CSV.")
@@ -352,6 +371,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     temp_cookie_path: Optional[Path] = None
     cookies_bytes = context.get("cookies_bytes")
     cookies_name = context.get("cookies_name") or "cookies.txt"
+    skip_requested = st.session_state.pop("batch_skip_requested", False)
     try:
         if cookies_bytes:
             suffix = Path(cookies_name).suffix or ".txt"
@@ -385,6 +405,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         failed_total = int(summary_counts_state.get("failure", 0))
         skipped_total = int(summary_counts_state.get("skipped", 0))
         pause_triggered = False
+        paused_reason = ""
         processed_in_run = 0
 
         filename_candidates = context.get("filename_candidates") or (
@@ -433,6 +454,26 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 row = rows[zero_idx]
                 index = zero_idx + 1
                 processed_in_run += 1
+
+                if skip_requested:
+                    detail_message = "Skipped by user request."
+                    LOGGER.info("Skipping row %s by user request.", index)
+                    results.append(
+                        {
+                            "Row": index,
+                            "URL": row.get(url_column, "").strip(),
+                            "Status": "skipped",
+                            "Detail": detail_message,
+                        }
+                    )
+                    set_row_status(row, "skipped", detail_message)
+                    skipped_total += 1
+                    update_placeholders(index, detail_message)
+                    context["next_row"] = zero_idx + 1
+                    pause_triggered = True
+                    paused_reason = "skip"
+                    skip_requested = False
+                    break
 
                 if skip_completed:
                     existing_status = str(row.get(status_column, "")).strip().lower()
@@ -583,9 +624,14 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         st.session_state["batch_live_row_text"] = None
         st.session_state["batch_live_counts_text"] = None
         if pause_triggered:
-            status_placeholder.info(
-                f"Batch paused after {pause_limit} row(s). Use the sidebar continue controls to process more rows."
-            )
+            if paused_reason == "skip":
+                status_placeholder.info(
+                    "Batch paused after skipping the current row per user request. Use the sidebar controls to resume."
+                )
+            else:
+                status_placeholder.info(
+                    f"Batch paused after {pause_limit} row(s). Use the sidebar continue controls to process more rows."
+                )
         else:
             status_placeholder.empty()
     finally:
@@ -700,7 +746,8 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         "failure_count": failure_count,
         "skipped_count": skipped_count,
         "log_output": batch_log_output,
-        "paused_after": pause_limit if pause_triggered else 0,
+        "paused_after": pause_limit if (pause_triggered and paused_reason != "skip") else 0,
+        "paused_reason": paused_reason,
         "updated_csv": updated_csv_bytes,
         "updated_csv_filename": updated_csv_name,
         "zip_bytes": zip_bytes,
@@ -1032,6 +1079,22 @@ if batch_results:
     _display_batch_results(batch_results, batch_download_expander)
 
 processing_triggered = False
+if st.session_state.get("batch_skip_requested"):
+    context = st.session_state.get("batch_context")
+    if context:
+        skip_pause_limit = 0
+        skip_choice = bool(context.get("skip_completed_default", True))
+        skip_results = _process_batch(context, skip_pause_limit, skip_choice)
+        if skip_results is not None:
+            skip_results = _update_batch_history(context, skip_results)
+            st.session_state["batch_results"] = skip_results
+            batch_results = skip_results
+            processing_triggered = True
+            if skip_results.get("remaining_rows") == 0:
+                st.session_state.pop("batch_context", None)
+    else:
+        st.session_state["batch_skip_requested"] = False
+
 pause_after = int(pause_after_sidebar)
 
 if csv_submitted:
