@@ -39,6 +39,7 @@ MIME_BY_SUFFIX = {
     ".mov": "video/quicktime",
 }
 
+
 def _path_relative_to_workspace(path: Path) -> str:
     """Return path relative to the working directory when possible."""
     try:
@@ -46,6 +47,105 @@ def _path_relative_to_workspace(path: Path) -> str:
         return path.resolve().relative_to(workspace_root).as_posix()
     except Exception:
         return str(path)
+
+
+def _ensure_batch_state() -> dict:
+    """Ensure batch-related session structures exist and return batch_results dict."""
+    st.session_state.setdefault("batch_all_results", [])
+    st.session_state.setdefault("batch_all_downloads", [])
+    st.session_state.setdefault("batch_summary_counts", {"success": 0, "failure": 0, "skipped": 0})
+
+    batch_results = st.session_state.get("batch_results")
+    if not batch_results:
+        batch_results = {
+            "results": st.session_state["batch_all_results"],
+            "downloadable_items": st.session_state["batch_all_downloads"],
+            "success_count": 0,
+            "failure_count": 0,
+            "skipped_count": 0,
+            "summary_counts": st.session_state["batch_summary_counts"],
+            "log_output": "",
+            "paused_after": 0,
+            "updated_csv": None,
+            "updated_csv_filename": None,
+            "zip_bytes": None,
+            "zip_filename": "clips.zip",
+            "remaining_rows": 0,
+            "default_pause_limit": 0,
+            "skip_completed_default": True,
+        }
+        st.session_state["batch_results"] = batch_results
+    else:
+        batch_results.setdefault("results", st.session_state["batch_all_results"])
+        batch_results.setdefault("downloadable_items", st.session_state["batch_all_downloads"])
+        batch_results.setdefault("summary_counts", st.session_state["batch_summary_counts"])
+        batch_results.setdefault("success_count", batch_results.get("summary_counts", {}).get("success", 0))
+        batch_results.setdefault("failure_count", batch_results.get("summary_counts", {}).get("failure", 0))
+        batch_results.setdefault("skipped_count", batch_results.get("summary_counts", {}).get("skipped", 0))
+        batch_results.setdefault("log_output", "")
+        batch_results.setdefault("paused_after", 0)
+        batch_results.setdefault("updated_csv", None)
+        batch_results.setdefault("updated_csv_filename", None)
+        batch_results.setdefault("zip_bytes", None)
+        batch_results.setdefault("zip_filename", batch_results.get("zip_filename") or "clips.zip")
+        batch_results.setdefault("remaining_rows", 0)
+        batch_results.setdefault("default_pause_limit", 0)
+        batch_results.setdefault("skip_completed_default", True)
+    return batch_results
+
+
+def _next_single_row_label() -> str:
+    """Generate a unique label for single download rows."""
+    counter = st.session_state.get("single_result_counter", 0) + 1
+    st.session_state["single_result_counter"] = counter
+    return f"S{counter}"
+
+
+def _append_single_download_result(
+    url: str,
+    status: str,
+    detail: str,
+    saved_path: Optional[Path] = None,
+    display_name: Optional[str] = None,
+) -> None:
+    """Append a synthetic row representing a single download into batch tables."""
+    batch_results = _ensure_batch_state()
+    summary_counts = st.session_state["batch_summary_counts"]
+
+    normalized_status = status.strip().lower()
+    if normalized_status in {"downloaded", "success"}:
+        summary_counts["success"] = summary_counts.get("success", 0) + 1
+        recorded_status = "downloaded"
+    elif normalized_status == "failed":
+        summary_counts["failure"] = summary_counts.get("failure", 0) + 1
+        recorded_status = "failed"
+    else:
+        summary_counts["skipped"] = summary_counts.get("skipped", 0) + 1
+        recorded_status = "skipped"
+
+    row_label = _next_single_row_label()
+    entry = {"Row": row_label, "URL": url, "Status": recorded_status, "Detail": detail}
+    st.session_state["batch_all_results"].append(entry)
+
+    if recorded_status == "downloaded" and saved_path:
+        path_str = str(saved_path)
+        download_entry = {
+            "row": row_label,
+            "path": path_str,
+            "display_name": display_name or saved_path.name,
+        }
+        st.session_state["batch_all_downloads"].append(download_entry)
+
+    batch_results["results"] = st.session_state["batch_all_results"]
+    batch_results["downloadable_items"] = st.session_state["batch_all_downloads"]
+    batch_results["summary_counts"] = summary_counts
+    batch_results["success_count"] = summary_counts.get("success", 0)
+    batch_results["failure_count"] = summary_counts.get("failure", 0)
+    batch_results["skipped_count"] = summary_counts.get("skipped", 0)
+    batch_results["remaining_rows"] = batch_results.get("remaining_rows", 0) or 0
+    batch_results["default_pause_limit"] = batch_results.get("default_pause_limit", 0) or 0
+    batch_results["skip_completed_default"] = batch_results.get("skip_completed_default", True)
+    st.session_state["batch_results"] = batch_results
 
 
 
@@ -844,8 +944,26 @@ if submitted:
                         )
                     else:
                         st.warning("Downloaded file could not be read for download.")
+                    provided_name = filename.strip() if filename else ""
+                    _append_single_download_result(
+                        url=url.strip(),
+                        status="downloaded",
+                        detail=str(result_path),
+                        saved_path=result_path,
+                        display_name=provided_name or None,
+                    )
                 else:
                     st.error("Download failed. Check the logs for more details.")
+                    failure_detail = "Download failed."
+                    if log_output:
+                        failure_detail = log_output.strip().splitlines()[-1]
+                    _append_single_download_result(
+                        url=url.strip(),
+                        status="failed",
+                        detail=failure_detail,
+                        saved_path=None,
+                        display_name=None,
+                    )
 
                 if log_output:
                     st.text_area("Logs", log_output, height=240)
