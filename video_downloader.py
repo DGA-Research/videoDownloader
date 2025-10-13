@@ -200,10 +200,13 @@ def _clip_media(source: Path, start: Optional[float], end: Optional[float]) -> O
     return source
 
 
+MAX_TITLE_COMPONENT = 80
+
+
 def _build_output_template(output_dir: Path, filename: Optional[str]) -> str:
     """Ensure a custom filename still includes an extension placeholder."""
     if not filename:
-        return str(output_dir / "%(title)s.%(ext)s")
+        return str(output_dir / f"%(title).{MAX_TITLE_COMPONENT}B-%(id)s.%(ext)s")
 
     cleaned = filename.strip()
     if not cleaned:
