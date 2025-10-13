@@ -39,8 +39,6 @@ MIME_BY_SUFFIX = {
     ".mov": "video/quicktime",
 }
 
-YOUTUBE_FAILURE_INDICATOR = "Video download failed for https://www.youtube.com/"
-
 
 def _path_relative_to_workspace(path: Path) -> str:
     """Return path relative to the working directory when possible."""
@@ -56,7 +54,6 @@ def _ensure_batch_state() -> dict:
     st.session_state.setdefault("batch_all_results", [])
     st.session_state.setdefault("batch_all_downloads", [])
     st.session_state.setdefault("batch_summary_counts", {"success": 0, "failure": 0, "skipped": 0})
-    st.session_state.setdefault("batch_zip_name", "clips.zip")
 
     batch_results = st.session_state.get("batch_results")
     if not batch_results:
@@ -72,7 +69,7 @@ def _ensure_batch_state() -> dict:
             "updated_csv": None,
             "updated_csv_filename": None,
             "zip_bytes": None,
-            "zip_filename": st.session_state["batch_zip_name"],
+            "zip_filename": "clips.zip",
             "remaining_rows": 0,
             "default_pause_limit": 0,
             "skip_completed_default": True,
@@ -90,7 +87,7 @@ def _ensure_batch_state() -> dict:
         batch_results.setdefault("updated_csv", None)
         batch_results.setdefault("updated_csv_filename", None)
         batch_results.setdefault("zip_bytes", None)
-        batch_results.setdefault("zip_filename", batch_results.get("zip_filename") or st.session_state["batch_zip_name"])
+        batch_results.setdefault("zip_filename", batch_results.get("zip_filename") or "clips.zip")
         batch_results.setdefault("remaining_rows", 0)
         batch_results.setdefault("default_pause_limit", 0)
         batch_results.setdefault("skip_completed_default", True)
@@ -127,8 +124,7 @@ def _append_single_download_result(
         recorded_status = "skipped"
 
     row_label = _next_single_row_label()
-    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    entry = {"Row": row_label, "URL": url, "Status": recorded_status, "Detail": detail, "Processed At": timestamp}
+    entry = {"Row": row_label, "URL": url, "Status": recorded_status, "Detail": detail}
     st.session_state["batch_all_results"].append(entry)
 
     if recorded_status == "downloaded" and saved_path:
@@ -149,79 +145,7 @@ def _append_single_download_result(
     batch_results["remaining_rows"] = batch_results.get("remaining_rows", 0) or 0
     batch_results["default_pause_limit"] = batch_results.get("default_pause_limit", 0) or 0
     batch_results["skip_completed_default"] = batch_results.get("skip_completed_default", True)
-    default_zip_name = st.session_state.get("batch_zip_name", batch_results.get("zip_filename") or "clips.zip")
-    zip_bytes, zip_name = _rebuild_zip_bundle(default_zip_name)
-    batch_results["zip_bytes"] = zip_bytes
-    batch_results["zip_filename"] = zip_name
     st.session_state["batch_results"] = batch_results
-
-
-def _rebuild_zip_bundle(default_zip_name: str = "clips.zip") -> Tuple[Optional[bytes], str]:
-    """Rebuild the aggregate zip (with metadata) from session download items."""
-    download_items = st.session_state.get("batch_all_downloads") or []
-    if not download_items:
-        return None, default_zip_name
-
-    results = st.session_state.get("batch_all_results") or []
-    result_map = {str(entry.get("Row")): entry for entry in results if "Row" in entry}
-
-    buffer = BytesIO()
-    used_names = set()
-    metadata_rows = []
-
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item in download_items:
-            path_value = item.get("path")
-            if not path_value:
-                continue
-            saved_path = Path(path_value)
-            if not saved_path.exists():
-                LOGGER.warning("Skipping missing file while building zip: %s", saved_path)
-                continue
-
-            row_key = str(item.get("row"))
-            record = result_map.get(row_key, {})
-            arcname = saved_path.name
-            if arcname in used_names:
-                stem = saved_path.stem
-                suffix = saved_path.suffix
-                counter = 1
-                while True:
-                    candidate = f"{stem}_{counter}{suffix}"
-                    if candidate not in used_names:
-                        arcname = candidate
-                        break
-                    counter += 1
-            used_names.add(arcname)
-
-            try:
-                zf.write(saved_path, arcname=arcname)
-            except OSError as exc:
-                LOGGER.warning("Failed to add %s to zip: %s", saved_path, exc)
-                continue
-
-            metadata_rows.append(
-                [
-                    record.get("Row", row_key),
-                    record.get("URL", ""),
-                    arcname,
-                    _path_relative_to_workspace(saved_path),
-                    str(saved_path),
-                    record.get("Processed At", ""),
-                ]
-            )
-
-        if not metadata_rows:
-            return None, default_zip_name
-
-        metadata_buffer = StringIO()
-        writer = csv.writer(metadata_buffer)
-        writer.writerow(["Row", "Original URL", "Zip Entry", "Repository Path", "Local Path", "Processed At"])
-        writer.writerows(metadata_rows)
-        zf.writestr("metadata.csv", metadata_buffer.getvalue())
-
-    buffer.seek(0)
-    return buffer.getvalue(), default_zip_name
 
 
 
@@ -380,9 +304,6 @@ def _display_batch_results(data: dict, controls_container=None) -> None:
     if log_output:
         st.text_area("Batch logs", log_output, height=240, key="csv_batch_logs")
         if "HTTP Error 403: Forbidden" in log_output and not st.session_state.get("cookie_refresh_prompt", False):
-            st.session_state["cookie_refresh_prompt"] = True
-        if YOUTUBE_FAILURE_INDICATOR in log_output:
-            st.warning("YouTube download failed. Upload fresh cookies and try again.")
             st.session_state["cookie_refresh_prompt"] = True
 
     updated_csv = data.get("updated_csv")
@@ -697,10 +618,71 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             writer.writerow({key: row.get(key, "") for key in fieldnames})
     updated_csv_bytes = updated_csv_buffer.getvalue().encode("utf-8-sig")
 
+    successful_entries = []
+    for idx, row in enumerate(rows, start=1):
+        if str(row.get(status_column, "")).strip().lower() == "downloaded":
+            path_str = row.get(path_column, "")
+            if path_str:
+                saved_path = Path(path_str)
+                if saved_path.exists():
+                    successful_entries.append(
+                        {
+                            "row_number": idx,
+                            "url": (row.get(url_column) or "").strip(),
+                            "path": saved_path,
+                            "repo_path": _path_relative_to_workspace(saved_path),
+                            "timestamp": row.get(timestamp_column, ""),
+                        }
+                    )
+
     zip_bytes = None
     zip_filename = context.get("source_filename") or "batch.csv"
     zip_filename = f"{Path(zip_filename).stem}_clips.zip"
-    st.session_state["batch_zip_name"] = zip_filename
+
+    if successful_entries:
+        buffer = BytesIO()
+        used_names = set()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            metadata_rows = []
+            for entry in successful_entries:
+                saved_path = entry["path"]
+                arcname = saved_path.name
+                if arcname in used_names:
+                    stem = saved_path.stem
+                    suffix = saved_path.suffix
+                    counter = 1
+                    while True:
+                        candidate = f"{stem}_{counter}{suffix}"
+                        if candidate not in used_names:
+                            arcname = candidate
+                            break
+                        counter += 1
+                used_names.add(arcname)
+                try:
+                    zf.write(saved_path, arcname=arcname)
+                except OSError as exc:
+                    LOGGER.warning("Failed to add %s to archive: %s", saved_path, exc)
+                    continue
+                metadata_rows.append(
+                    [
+                        entry["row_number"],
+                        entry["url"],
+                        arcname,
+                        entry["repo_path"],
+                        str(saved_path),
+                        entry["timestamp"],
+                    ]
+                )
+            if metadata_rows:
+                metadata_buffer = StringIO()
+                writer = csv.writer(metadata_buffer)
+                writer.writerow(
+                    ["Row", "Original URL", "Zip Entry", "Repository Path", "Local Path", "Processed At"]
+                )
+                writer.writerows(metadata_rows)
+                zf.writestr("metadata.csv", metadata_buffer.getvalue())
+        buffer.seek(0)
+        zip_bytes = buffer.getvalue()
 
     updated_csv_name = context.get("source_filename") or "batch.csv"
     updated_csv_name = f"{Path(updated_csv_name).stem}_with_status.csv"
@@ -736,7 +718,6 @@ def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict], 
     status_column = context.get("status_column")
     detail_column = context.get("detail_column")
     path_column = context.get("path_column")
-    timestamp_column = context.get("timestamp_column")
     filename_candidates = context.get("filename_candidates") or ()
 
     processed_rows: List[dict] = []
@@ -760,7 +741,6 @@ def _build_history_from_context(context: dict) -> Tuple[List[dict], List[dict], 
             "URL": (row.get(url_column) or "").strip(),
             "Status": status,
             "Detail": row.get(detail_column, ""),
-            "Processed At": row.get(timestamp_column, "") if timestamp_column else "",
         }
         processed_rows.append(entry)
 
@@ -804,10 +784,6 @@ def _update_batch_history(context: dict, batch_results: dict) -> dict:
     batch_results["success_count"] = summary_counts.get("success", 0)
     batch_results["failure_count"] = summary_counts.get("failure", 0)
     batch_results["skipped_count"] = summary_counts.get("skipped", 0)
-    default_zip_name = st.session_state.get("batch_zip_name", batch_results.get("zip_filename") or "clips.zip")
-    zip_bytes, zip_name = _rebuild_zip_bundle(default_zip_name)
-    batch_results["zip_bytes"] = zip_bytes
-    batch_results["zip_filename"] = zip_name
     return batch_results
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=LOG_DATEFMT)
@@ -825,10 +801,7 @@ if yt_dlp_outdated:
         "`pip install --upgrade yt-dlp` to avoid recent YouTube download restrictions."
     )
 
-st.caption(
-    "Known issues: Does not work with some region-gated YouTube videos; long videos and large batches can crash. "
-    "If YouTube downloads fail, upload fresh cookies exported from your browser."
-)
+st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 if not FFMPEG_AVAILABLE:
     st.warning("ffmpeg not detected. Install ffmpeg to enable audio/video clipping and proper muxing.")
 
@@ -994,11 +967,6 @@ if submitted:
 
                 if log_output:
                     st.text_area("Logs", log_output, height=240)
-                    if "HTTP Error 403: Forbidden" in log_output and not st.session_state.get("cookie_refresh_prompt", False):
-                        st.session_state["cookie_refresh_prompt"] = True
-                    if YOUTUBE_FAILURE_INDICATOR in log_output:
-                        st.warning("YouTube download failed. Upload fresh cookies and try again.")
-                        st.session_state["cookie_refresh_prompt"] = True
                 else:
                     st.caption("No log output captured for this run.")
 
@@ -1026,7 +994,8 @@ with batch_download_expander:
     )
     if st.session_state.get("cookie_refresh_prompt"):
         st.warning(
-            "Recent downloads failed or hit authentication errors. Upload fresh cookies before continuing."
+            "Recent downloads hit HTTP 403 errors. Upload fresh cookies before continuing.",
+            icon="⚠️",
         )
     if "batch_pause_after" not in st.session_state:
         st.session_state["batch_pause_after"] = 0
@@ -1172,5 +1141,4 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
-
 
