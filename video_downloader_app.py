@@ -40,6 +40,55 @@ MIME_BY_SUFFIX = {
 }
 
 
+def _format_duration(seconds: Optional[float]) -> str:
+    """Return a friendly duration string for metadata output."""
+    if seconds is None:
+        return ""
+
+    total = max(0.0, float(seconds))
+    hours = int(total // 3600)
+    minutes = int((total % 3600) // 60)
+    secs = total - hours * 3600 - minutes * 60
+
+    if abs(secs - round(secs)) < 1e-6:
+        secs_str = f"{int(round(secs)):02d}"
+    else:
+        secs_str = f"{secs:06.3f}".rstrip("0").rstrip(".")
+        if secs_str.startswith("."):
+            secs_str = f"0{secs_str}"
+
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs_str}"
+    return f"{minutes:d}:{secs_str}"
+
+
+def _build_metadata_csv(entries: List[dict]) -> str:
+    """Create a CSV string with per-clip metadata."""
+    if not entries:
+        return ""
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["Archive Name", "Video Name", "Original URL", "Clip Duration", "Clip Duration (seconds)"])
+
+    for entry in entries:
+        seconds = entry.get("clip_duration_seconds")
+        seconds_field = ""
+        if seconds is not None:
+            seconds_field = f"{seconds:.3f}".rstrip("0").rstrip(".")
+        writer.writerow(
+            [
+                entry.get("archive_name") or entry.get("file_name") or "",
+                entry.get("display_name") or entry.get("file_name") or "",
+                entry.get("original_url") or "",
+                entry.get("clip_duration_display") or "",
+                seconds_field,
+            ]
+        )
+
+    return buffer.getvalue()
+
+
 
 def _display_batch_results(data: dict, controls_container=None) -> None:
     if not data:
@@ -511,13 +560,51 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     updated_csv_bytes = updated_csv_buffer.getvalue().encode("utf-8-sig")
 
     successful_paths = []
+    metadata_entries: List[dict] = []
+    filename_candidates = context.get("filename_candidates") or ()
+    url_column = context.get("url_column")
     for row in rows:
-        if str(row.get(status_column, "")).strip().lower() == "downloaded":
-            path_str = row.get(path_column, "")
-            if path_str:
-                saved_path = Path(path_str)
-                if saved_path.exists():
-                    successful_paths.append(saved_path)
+        status_value = str(row.get(status_column, "")).strip().lower()
+        if status_value not in COMPLETED_STATUS_VALUES:
+            continue
+        path_str = row.get(path_column, "")
+        if not path_str:
+            continue
+        saved_path = Path(path_str)
+        if not saved_path.exists():
+            continue
+        successful_paths.append(saved_path)
+        display_name = None
+        for candidate in filename_candidates:
+            value = row.get(candidate)
+            if value and str(value).strip():
+                display_name = str(value).strip()
+                break
+        if not display_name:
+            display_name = saved_path.stem
+        url_value = (row.get(url_column) or "").strip() if url_column else ""
+        clip_start_raw = (row.get("Clip Start Time") or "").strip()
+        clip_end_raw = (row.get("Clip End Time") or "").strip()
+        clip_start_seconds_meta = parse_time_to_seconds(clip_start_raw) if clip_start_raw else None
+        clip_end_seconds_meta = parse_time_to_seconds(clip_end_raw) if clip_end_raw else None
+        duration_seconds = None
+        if clip_end_seconds_meta is not None:
+            duration_seconds = (
+                clip_end_seconds_meta
+                if clip_start_seconds_meta is None
+                else max(clip_end_seconds_meta - clip_start_seconds_meta, 0.0)
+            )
+        metadata_entries.append(
+            {
+                "path": saved_path,
+                "file_name": saved_path.name,
+                "archive_name": saved_path.name,
+                "display_name": display_name,
+                "original_url": url_value,
+                "clip_duration_seconds": duration_seconds,
+                "clip_duration_display": _format_duration(duration_seconds),
+            }
+        )
 
     zip_bytes = None
     zip_filename = context.get("source_filename") or "batch.csv"
@@ -526,6 +613,7 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
     if successful_paths:
         buffer = BytesIO()
         used_names = set()
+        metadata_by_path = {entry["path"]: entry for entry in metadata_entries}
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for saved_path in successful_paths:
                 arcname = saved_path.name
@@ -542,8 +630,15 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                 used_names.add(arcname)
                 try:
                     zf.write(saved_path, arcname=arcname)
+                    entry = metadata_by_path.get(saved_path)
+                    if entry:
+                        entry["archive_name"] = arcname
                 except OSError as exc:
                     LOGGER.warning("Failed to add %s to archive: %s", saved_path, exc)
+            if metadata_entries:
+                metadata_csv = _build_metadata_csv(metadata_entries)
+                if metadata_csv:
+                    zf.writestr("metadata.csv", metadata_csv.encode("utf-8-sig"))
         buffer.seek(0)
         zip_bytes = buffer.getvalue()
 
