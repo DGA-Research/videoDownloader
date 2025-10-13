@@ -39,6 +39,14 @@ MIME_BY_SUFFIX = {
     ".mov": "video/quicktime",
 }
 
+def _path_relative_to_workspace(path: Path) -> str:
+    """Return path relative to the working directory when possible."""
+    try:
+        workspace_root = Path.cwd().resolve()
+        return path.resolve().relative_to(workspace_root).as_posix()
+    except Exception:
+        return str(path)
+
 
 
 def _display_batch_results(data: dict, controls_container=None) -> None:
@@ -510,24 +518,34 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
             writer.writerow({key: row.get(key, "") for key in fieldnames})
     updated_csv_bytes = updated_csv_buffer.getvalue().encode("utf-8-sig")
 
-    successful_paths = []
-    for row in rows:
+    successful_entries = []
+    for idx, row in enumerate(rows, start=1):
         if str(row.get(status_column, "")).strip().lower() == "downloaded":
             path_str = row.get(path_column, "")
             if path_str:
                 saved_path = Path(path_str)
                 if saved_path.exists():
-                    successful_paths.append(saved_path)
+                    successful_entries.append(
+                        {
+                            "row_number": idx,
+                            "url": (row.get(url_column) or "").strip(),
+                            "path": saved_path,
+                            "repo_path": _path_relative_to_workspace(saved_path),
+                            "timestamp": row.get(timestamp_column, ""),
+                        }
+                    )
 
     zip_bytes = None
     zip_filename = context.get("source_filename") or "batch.csv"
     zip_filename = f"{Path(zip_filename).stem}_clips.zip"
 
-    if successful_paths:
+    if successful_entries:
         buffer = BytesIO()
         used_names = set()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for saved_path in successful_paths:
+            metadata_rows = []
+            for entry in successful_entries:
+                saved_path = entry["path"]
                 arcname = saved_path.name
                 if arcname in used_names:
                     stem = saved_path.stem
@@ -544,6 +562,25 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                     zf.write(saved_path, arcname=arcname)
                 except OSError as exc:
                     LOGGER.warning("Failed to add %s to archive: %s", saved_path, exc)
+                    continue
+                metadata_rows.append(
+                    [
+                        entry["row_number"],
+                        entry["url"],
+                        arcname,
+                        entry["repo_path"],
+                        str(saved_path),
+                        entry["timestamp"],
+                    ]
+                )
+            if metadata_rows:
+                metadata_buffer = StringIO()
+                writer = csv.writer(metadata_buffer)
+                writer.writerow(
+                    ["Row", "Original URL", "Zip Entry", "Repository Path", "Local Path", "Processed At"]
+                )
+                writer.writerows(metadata_rows)
+                zf.writestr("metadata.csv", metadata_buffer.getvalue())
         buffer.seek(0)
         zip_bytes = buffer.getvalue()
 
