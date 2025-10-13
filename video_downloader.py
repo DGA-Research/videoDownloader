@@ -77,7 +77,9 @@ def download_video(
         LOGGER.error("Unable to create output directory %s: %s", output_dir, exc)
         return None
 
-    template = str(output_dir / (filename or "%(title)s.%(ext)s"))
+    MAX_TITLE_COMPONENT = 80
+
+    template = str(output_dir / f"%(title).{MAX_TITLE_COMPONENT}B-%(id)s.%(ext)s")
     LOGGER.debug("Using output template %s", template)
 
     if FFMPEG_AVAILABLE:
@@ -188,3 +190,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
