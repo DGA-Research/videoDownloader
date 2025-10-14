@@ -701,9 +701,8 @@ if yt_dlp_outdated:
         "`pip install --upgrade yt-dlp` to avoid recent YouTube download restrictions."
     )
 
-st.caption("Known issues: Does not work with some reigon-gated YouTube videos")
 st.caption(
-    "Known issues:"
+    "Known issues:\n"
     "- Does not work with some reigon-gated YouTube videos or livestreams\n"
     "- Long videos and large batch downloads can cause crashes"
             )
@@ -1028,5 +1027,6 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
+
 
 
