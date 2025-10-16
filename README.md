@@ -3,7 +3,7 @@
 Streamlit front-end for downloading videos with [yt-dlp](https://github.com/yt-dlp/yt-dlp). The app supports one-off downloads as well as batch jobs driven by CSV files, and lets you reuse browser cookies for locked-down sources.
 
 ## Virtual Access
-- App can be accessed virtually via: https://betterillumis-ocj7zc4myap2gpcmcrebpb.streamlit.app/
+- App can be accessed virtually via: https://videodownloader-gdacywux3cxqrfp245swa7.streamlit.app/
 
 ## Local Prerequisites (optional)
 - Python 3.9 or newer with `pip`
