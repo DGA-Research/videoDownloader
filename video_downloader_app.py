@@ -33,6 +33,10 @@ TIMESTAMP_COLUMN = "Processed At"
 COMPLETED_STATUS_VALUES = {"downloaded", "success"}
 URL_COLUMN_CANDIDATES = ("url", "link", "links")
 SKIP_COLUMN_CANDIDATES = ("skip",)
+CLIP_START_COLUMN = "Clip Start Time"
+CLIP_END_COLUMN = "Clip End Time"
+CLIP_START_COLUMN_CANDIDATES = ("clip start time", "clip start", "clip_start", "start time")
+CLIP_END_COLUMN_CANDIDATES = ("clip end time", "clip end", "clip_end", "end time")
 
 MIME_BY_SUFFIX = {
     ".mp4": "video/mp4",
@@ -310,6 +314,8 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
         )
         url_column = context["url_column"]
         skip_column = context.get("skip_column")
+        clip_start_column = context.get("clip_start_column")
+        clip_end_column = context.get("clip_end_column")
         status_column = context["status_column"]
         detail_column = context["detail_column"]
         path_column = context["path_column"]
@@ -412,8 +418,10 @@ def _process_batch(context: dict, pause_limit: int, skip_completed: bool) -> Opt
                         filename_value = str(value).strip()
                         break
 
-                clip_start_raw = (row.get("Clip Start Time") or "").strip()
-                clip_end_raw = (row.get("Clip End Time") or "").strip()
+                clip_start_raw = (
+                    (row.get(clip_start_column) or "").strip() if clip_start_column else ""
+                )
+                clip_end_raw = (row.get(clip_end_column) or "").strip() if clip_end_column else ""
                 clip_start_seconds: Optional[float] = None
                 clip_end_seconds: Optional[float] = None
                 row_errors = []
@@ -966,9 +974,27 @@ with batch_download_expander:
                                 ),
                                 None,
                             )
+                            clip_start_candidate = next(
+                                (
+                                    col
+                                    for col in fieldnames
+                                    if col and col.strip().lower() in CLIP_START_COLUMN_CANDIDATES
+                                ),
+                                None,
+                            )
+                            clip_end_candidate = next(
+                                (
+                                    col
+                                    for col in fieldnames
+                                    if col and col.strip().lower() in CLIP_END_COLUMN_CANDIDATES
+                                ),
+                                None,
+                            )
                             defaults = {
                                 "url": url_candidate or (fieldnames[0] if fieldnames else ""),
                                 "skip": skip_candidate,
+                                "clip_start": clip_start_candidate,
+                                "clip_end": clip_end_candidate,
                                 "status": _find_matching_column(fieldnames, STATUS_COLUMN) or STATUS_COLUMN,
                                 "detail": _find_matching_column(fieldnames, DETAIL_COLUMN) or DETAIL_COLUMN,
                                 "path": _find_matching_column(fieldnames, PATH_COLUMN) or PATH_COLUMN,
@@ -1006,14 +1032,16 @@ with batch_download_expander:
         skip_default = (existing_map or {}).get("columns", {}).get("skip")
         if skip_default not in fieldnames:
             skip_default = defaults.get("skip")
-        status_default = (existing_map or {}).get("columns", {}).get("status") or defaults.get("status") or STATUS_COLUMN
-        detail_default = (existing_map or {}).get("columns", {}).get("detail") or defaults.get("detail") or DETAIL_COLUMN
-        path_default = (existing_map or {}).get("columns", {}).get("path") or defaults.get("path") or PATH_COLUMN
-        timestamp_default = (
-            (existing_map or {}).get("columns", {}).get("timestamp")
-            or defaults.get("timestamp")
-            or TIMESTAMP_COLUMN
-        )
+        clip_start_default = (existing_map or {}).get("columns", {}).get("clip_start")
+        if clip_start_default not in fieldnames:
+            clip_start_default = defaults.get("clip_start")
+        if clip_start_default not in fieldnames:
+            clip_start_default = None
+        clip_end_default = (existing_map or {}).get("columns", {}).get("clip_end")
+        if clip_end_default not in fieldnames:
+            clip_end_default = defaults.get("clip_end")
+        if clip_end_default not in fieldnames:
+            clip_end_default = None
 
         if not fieldnames:
             st.error("CSV file has no header row to identify columns.")
@@ -1026,6 +1054,18 @@ with batch_download_expander:
             skip_options = ["(none)"] + fieldnames
             skip_index = (
                 skip_options.index(skip_default) if skip_default and skip_default in skip_options else 0
+            )
+            clip_start_options = ["(none)"] + fieldnames
+            clip_start_index = (
+                clip_start_options.index(clip_start_default)
+                if clip_start_default and clip_start_default in clip_start_options
+                else 0
+            )
+            clip_end_options = ["(none)"] + fieldnames
+            clip_end_index = (
+                clip_end_options.index(clip_end_default)
+                if clip_end_default and clip_end_default in clip_end_options
+                else 0
             )
 
             with st.form("batch_column_mapping"):
@@ -1041,44 +1081,24 @@ with batch_download_expander:
                     index=skip_index,
                     help="If set, any row with truthy value in this column will be skipped.",
                 )
-                status_input = st.text_input(
-                    "Status column",
-                    value=status_default,
-                    help="Streamlit will write download status to this column.",
+                clip_start_choice = st.selectbox(
+                    "Clip start column (optional)",
+                    clip_start_options,
+                    index=clip_start_index,
+                    help="If set, values in this column will be parsed as clip start times.",
                 )
-                detail_input = st.text_input(
-                    "Detail column",
-                    value=detail_default,
-                    help="Detailed status or error information will be stored here.",
-                )
-                path_input = st.text_input(
-                    "Download path column",
-                    value=path_default,
-                    help="Saved file paths are written to this column.",
-                )
-                timestamp_input = st.text_input(
-                    "Timestamp column",
-                    value=timestamp_default,
-                    help="UTC timestamps for processing are recorded in this column.",
+                clip_end_choice = st.selectbox(
+                    "Clip end column (optional)",
+                    clip_end_options,
+                    index=clip_end_index,
+                    help="If set, values in this column will be parsed as clip end times.",
                 )
                 mapping_submitted = st.form_submit_button("Use these columns")
 
             if mapping_submitted:
                 errors = []
-                status_value = status_input.strip()
-                detail_value = detail_input.strip()
-                path_value = path_input.strip()
-                timestamp_value = timestamp_input.strip()
                 if not url_column_choice:
                     errors.append("Select a URL column.")
-                if not status_value:
-                    errors.append("Status column name is required.")
-                if not detail_value:
-                    errors.append("Detail column name is required.")
-                if not path_value:
-                    errors.append("Download path column name is required.")
-                if not timestamp_value:
-                    errors.append("Timestamp column name is required.")
 
                 if errors:
                     for message in errors:
@@ -1089,10 +1109,12 @@ with batch_download_expander:
                         "columns": {
                             "url": url_column_choice,
                             "skip": skip_column_choice if skip_column_choice != "(none)" else None,
-                            "status": status_value,
-                            "detail": detail_value,
-                            "path": path_value,
-                            "timestamp": timestamp_value,
+                            "clip_start": clip_start_choice if clip_start_choice != "(none)" else None,
+                            "clip_end": clip_end_choice if clip_end_choice != "(none)" else None,
+                            "status": STATUS_COLUMN,
+                            "detail": DETAIL_COLUMN,
+                            "path": PATH_COLUMN,
+                            "timestamp": TIMESTAMP_COLUMN,
                         },
                         "ready": True,
                     }
@@ -1106,18 +1128,26 @@ with batch_download_expander:
     )
     if mapping_ready and current_map_state:
         selected_columns = current_map_state.get("columns", {})
+        clip_start_sel = selected_columns.get("clip_start")
+        clip_end_sel = selected_columns.get("clip_end")
+        detail_parts = [
+            f"URL `{selected_columns.get('url', '')}`",
+            f"Clip start `{clip_start_sel}`" if clip_start_sel else "Clip start `(none)`",
+            f"Clip end `{clip_end_sel}`" if clip_end_sel else "Clip end `(none)`",
+        ]
         st.success(
-            "Using columns: URL `{url}`, Status `{status}`, Detail `{detail}`, Path `{path}`, "
-            "Timestamp `{timestamp}`.".format(
-                url=selected_columns.get("url", ""),
-                status=selected_columns.get("status", ""),
-                detail=selected_columns.get("detail", ""),
-                path=selected_columns.get("path", ""),
-                timestamp=selected_columns.get("timestamp", ""),
+            "Using columns: {}. Results are recorded in `{}`, `{}`, `{}`, `{}`.".format(
+                ", ".join(detail_parts),
+                STATUS_COLUMN,
+                DETAIL_COLUMN,
+                PATH_COLUMN,
+                TIMESTAMP_COLUMN,
             )
         )
         if selected_columns.get("skip"):
             st.caption(f"Rows with truthy values in `{selected_columns['skip']}` will be skipped.")
+        if clip_start_sel or clip_end_sel:
+            st.caption("Clip times will use the selected columns; leave them unset for full downloads.")
     if "batch_pause_after" not in st.session_state:
         st.session_state["batch_pause_after"] = 0
     if batch_locked:
@@ -1185,6 +1215,8 @@ if csv_submitted:
                 path_column = selected_columns.get("path") or PATH_COLUMN
                 timestamp_column = selected_columns.get("timestamp") or TIMESTAMP_COLUMN
                 skip_column = selected_columns.get("skip")
+                clip_start_column = selected_columns.get("clip_start")
+                clip_end_column = selected_columns.get("clip_end")
 
                 base_fieldnames = list(fieldnames)
                 for column_name in (status_column, detail_column, path_column, timestamp_column):
@@ -1202,6 +1234,8 @@ if csv_submitted:
                     "fieldnames": base_fieldnames,
                     "url_column": url_column,
                     "skip_column": skip_column,
+                    "clip_start_column": clip_start_column,
+                    "clip_end_column": clip_end_column,
                     "status_column": status_column,
                     "detail_column": detail_column,
                     "path_column": path_column,
