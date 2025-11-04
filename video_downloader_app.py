@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 import html
@@ -31,6 +31,8 @@ DETAIL_COLUMN = "Download Detail"
 PATH_COLUMN = "Download Path"
 TIMESTAMP_COLUMN = "Processed At"
 COMPLETED_STATUS_VALUES = {"downloaded", "success"}
+URL_COLUMN_CANDIDATES = ("url", "link", "links")
+SKIP_COLUMN_CANDIDATES = ("skip",)
 
 MIME_BY_SUFFIX = {
     ".mp4": "video/mp4",
@@ -47,6 +49,19 @@ def _path_relative_to_workspace(path: Path) -> str:
     except Exception:
         return str(path)
 
+
+
+def _find_matching_column(fieldnames: Optional[List[str]], target: str) -> Optional[str]:
+    """Return the first column whose lowercase matches the provided target."""
+    if not fieldnames or not target:
+        return None
+    lowered = target.strip().lower()
+    if not lowered:
+        return None
+    for column in fieldnames:
+        if column and column.strip().lower() == lowered:
+            return column
+    return None
 
 
 def _display_batch_results(data: dict, controls_container=None) -> None:
@@ -747,6 +762,222 @@ with single_download_expander.form("download_form"):
         "Need cookies? Install the Get cookies.txt extension, export cookies from your signed-in browser tab, "
         "and upload the file here before downloading."
     )
+    csv_cache_key = "batch_csv_cache"
+    column_map_key = "batch_column_map"
+    csv_data: Optional[Dict[str, object]] = None
+    mapping_ready = False
+
+    if batch_locked:
+        csv_cache = st.session_state.get(csv_cache_key)
+        column_map_state = st.session_state.get(column_map_key)
+        if (
+            csv_cache
+            and column_map_state
+            and column_map_state.get("signature") == csv_cache.get("signature")
+            and column_map_state.get("ready")
+        ):
+            mapping_ready = True
+    else:
+        if csv_file:
+            csv_bytes = csv_file.getvalue()
+            file_signature = {
+                "name": getattr(csv_file, "name", ""),
+                "size": len(csv_bytes or b""),
+            }
+            csv_cache = st.session_state.get(csv_cache_key)
+            if not csv_bytes:
+                st.error("Uploaded CSV file is empty.")
+                st.session_state.pop(csv_cache_key, None)
+                st.session_state.pop(column_map_key, None)
+            else:
+                if not csv_cache or csv_cache.get("signature") != file_signature:
+                    decoded = None
+                    for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+                        try:
+                            decoded = csv_bytes.decode(encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if decoded is None:
+                        st.error("Could not decode CSV file. Please upload UTF-8 encoded CSVs.")
+                        st.session_state.pop(csv_cache_key, None)
+                        st.session_state.pop(column_map_key, None)
+                        csv_cache = None
+                    else:
+                        reader = csv.DictReader(StringIO(decoded))
+                        fieldnames = reader.fieldnames
+                        if not fieldnames:
+                            st.error("CSV file has no header row to identify columns.")
+                            st.session_state.pop(csv_cache_key, None)
+                            st.session_state.pop(column_map_key, None)
+                            csv_cache = None
+                        else:
+                            rows = list(reader)
+                            url_candidate = next(
+                                (
+                                    col
+                                    for col in fieldnames
+                                    if col and col.strip().lower() in URL_COLUMN_CANDIDATES
+                                ),
+                                None,
+                            )
+                            skip_candidate = next(
+                                (
+                                    col
+                                    for col in fieldnames
+                                    if col and col.strip().lower() in SKIP_COLUMN_CANDIDATES
+                                ),
+                                None,
+                            )
+                            defaults = {
+                                "url": url_candidate or (fieldnames[0] if fieldnames else ""),
+                                "skip": skip_candidate,
+                                "status": _find_matching_column(fieldnames, STATUS_COLUMN) or STATUS_COLUMN,
+                                "detail": _find_matching_column(fieldnames, DETAIL_COLUMN) or DETAIL_COLUMN,
+                                "path": _find_matching_column(fieldnames, PATH_COLUMN) or PATH_COLUMN,
+                                "timestamp": _find_matching_column(fieldnames, TIMESTAMP_COLUMN)
+                                or TIMESTAMP_COLUMN,
+                                "url_detected": bool(url_candidate),
+                            }
+                            csv_cache = {
+                                "signature": file_signature,
+                                "fieldnames": fieldnames,
+                                "rows": rows,
+                                "defaults": defaults,
+                                "source_name": getattr(csv_file, "name", "batch.csv"),
+                            }
+                            st.session_state[csv_cache_key] = csv_cache
+                            st.session_state.pop(column_map_key, None)
+                if csv_cache:
+                    csv_data = csv_cache
+        else:
+            st.session_state.pop(csv_cache_key, None)
+            st.session_state.pop(column_map_key, None)
+
+    if not batch_locked and csv_data:
+        fieldnames = csv_data.get("fieldnames") or []
+        defaults = csv_data.get("defaults") or {}
+        existing_map = st.session_state.get(column_map_key)
+        if not existing_map or existing_map.get("signature") != csv_data.get("signature"):
+            existing_map = None
+
+        url_default = (existing_map or {}).get("columns", {}).get("url") or defaults.get("url") or (
+            fieldnames[0] if fieldnames else ""
+        )
+        skip_default = (existing_map or {}).get("columns", {}).get("skip")
+        if skip_default not in fieldnames:
+            skip_default = defaults.get("skip")
+        status_default = (existing_map or {}).get("columns", {}).get("status") or defaults.get("status") or STATUS_COLUMN
+        detail_default = (existing_map or {}).get("columns", {}).get("detail") or defaults.get("detail") or DETAIL_COLUMN
+        path_default = (existing_map or {}).get("columns", {}).get("path") or defaults.get("path") or PATH_COLUMN
+        timestamp_default = (
+            (existing_map or {}).get("columns", {}).get("timestamp")
+            or defaults.get("timestamp")
+            or TIMESTAMP_COLUMN
+        )
+
+        if not fieldnames:
+            st.error("CSV file has no header row to identify columns.")
+        else:
+            st.markdown("#### Column Mapping")
+            if not defaults.get("url_detected", True) and existing_map is None:
+                st.info("Select the column that contains video URLs.")
+
+            url_index = fieldnames.index(url_default) if url_default in fieldnames else 0
+            skip_options = ["(none)"] + fieldnames
+            skip_index = (
+                skip_options.index(skip_default) if skip_default and skip_default in skip_options else 0
+            )
+
+            with st.form("batch_column_mapping"):
+                url_column_choice = st.selectbox(
+                    "URL column",
+                    fieldnames,
+                    index=url_index if fieldnames else 0,
+                    help="Choose the column that contains the video URLs to download.",
+                )
+                skip_column_choice = st.selectbox(
+                    "Skip column (optional)",
+                    skip_options,
+                    index=skip_index,
+                    help="If set, any row with truthy value in this column will be skipped.",
+                )
+                status_input = st.text_input(
+                    "Status column",
+                    value=status_default,
+                    help="Streamlit will write download status to this column.",
+                )
+                detail_input = st.text_input(
+                    "Detail column",
+                    value=detail_default,
+                    help="Detailed status or error information will be stored here.",
+                )
+                path_input = st.text_input(
+                    "Download path column",
+                    value=path_default,
+                    help="Saved file paths are written to this column.",
+                )
+                timestamp_input = st.text_input(
+                    "Timestamp column",
+                    value=timestamp_default,
+                    help="UTC timestamps for processing are recorded in this column.",
+                )
+                mapping_submitted = st.form_submit_button("Use these columns")
+
+            if mapping_submitted:
+                errors = []
+                status_value = status_input.strip()
+                detail_value = detail_input.strip()
+                path_value = path_input.strip()
+                timestamp_value = timestamp_input.strip()
+                if not url_column_choice:
+                    errors.append("Select a URL column.")
+                if not status_value:
+                    errors.append("Status column name is required.")
+                if not detail_value:
+                    errors.append("Detail column name is required.")
+                if not path_value:
+                    errors.append("Download path column name is required.")
+                if not timestamp_value:
+                    errors.append("Timestamp column name is required.")
+
+                if errors:
+                    for message in errors:
+                        st.error(message)
+                else:
+                    st.session_state[column_map_key] = {
+                        "signature": csv_data.get("signature"),
+                        "columns": {
+                            "url": url_column_choice,
+                            "skip": skip_column_choice if skip_column_choice != "(none)" else None,
+                            "status": status_value,
+                            "detail": detail_value,
+                            "path": path_value,
+                            "timestamp": timestamp_value,
+                        },
+                        "ready": True,
+                    }
+
+        current_map_state = st.session_state.get(column_map_key)
+        mapping_ready = bool(
+            current_map_state
+            and current_map_state.get("signature") == csv_data.get("signature")
+            and current_map_state.get("ready")
+        )
+        if mapping_ready:
+            selected_columns = current_map_state.get("columns", {})
+            st.success(
+                "Using columns: URL `{url}`, Status `{status}`, Detail `{detail}`, Path `{path}`, "
+                "Timestamp `{timestamp}`.".format(
+                    url=selected_columns.get("url", ""),
+                    status=selected_columns.get("status", ""),
+                    detail=selected_columns.get("detail", ""),
+                    path=selected_columns.get("path", ""),
+                    timestamp=selected_columns.get("timestamp", ""),
+                )
+            )
+            if selected_columns.get("skip"):
+                st.caption(f"Rows with truthy values in `{selected_columns['skip']}` will be skipped.")
 
     submitted = st.form_submit_button("Download", use_container_width=True)
 
@@ -866,7 +1097,7 @@ with batch_download_expander:
     csv_file = st.file_uploader(
         "CSV file with URLs",
         type=["csv"],
-        help="Upload a CSV containing a column named URL, Link, or Links.",
+        help="Upload a CSV, then choose which column contains the video URLs.",
     )
     batch_cookies_file = st.file_uploader(
         "Cookies file for all rows (optional)",
@@ -906,11 +1137,17 @@ with batch_download_expander:
     if batch_locked:
         csv_submitted = False
     else:
-        csv_submitted = st.button("Download URLs from CSV", use_container_width=True)
+        csv_submitted = st.button(
+            "Download URLs from CSV",
+            use_container_width=True,
+            disabled=not mapping_ready,
+        )
         if csv_submitted:
             st.session_state["batch_live_active"] = True
             st.session_state["batch_live_row_text"] = None
             st.session_state["batch_live_counts_text"] = None
+        elif not mapping_ready and csv_file:
+            st.info("Select and confirm column mappings before starting the batch download.")
 
 
 batch_results = st.session_state.get("batch_results")
@@ -921,89 +1158,65 @@ processing_triggered = False
 pause_after = int(pause_after_sidebar)
 
 if csv_submitted:
-    if not csv_file:
+    csv_cache = st.session_state.get(csv_cache_key)
+    column_map_state = st.session_state.get(column_map_key)
+    if not csv_file or not csv_cache:
         st.error("Please upload a CSV file.")
+    elif not column_map_state or column_map_state.get("signature") != csv_cache.get("signature"):
+        st.error("Set the column mapping before starting the batch download.")
     else:
-        csv_bytes = csv_file.getvalue()
-        if not csv_bytes:
-            st.error("Uploaded CSV file is empty.")
+        fieldnames = list(csv_cache.get("fieldnames") or [])
+        rows_source = csv_cache.get("rows") or []
+        rows = [dict(row) for row in rows_source]
+        if not rows:
+            st.warning("CSV did not contain any data rows.")
         else:
-            decoded = None
-            for encoding in ("utf-8-sig", "utf-8", "cp1252"):
-                try:
-                    decoded = csv_bytes.decode(encoding)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if decoded is None:
-                st.error("Could not decode CSV file. Please upload UTF-8 encoded CSVs.")
+            selected_columns = column_map_state.get("columns", {})
+            url_column = selected_columns.get("url")
+            if not url_column:
+                st.error("Select a column containing URLs before downloading.")
             else:
-                reader = csv.DictReader(StringIO(decoded))
-                fieldnames = reader.fieldnames
-                if not fieldnames:
-                    st.error("CSV file has no header row to identify columns.")
-                else:
-                    url_column = next(
-                        (col for col in fieldnames if col and col.strip().lower() in {"url", "link", "links"}),
-                        None,
-                    )
-                    if not url_column:
-                        st.error("No column named URL, Link, or Links was found in the CSV header.")
-                    else:
-                        rows = list(reader)
-                        if not rows:
-                            st.warning("CSV did not contain any data rows.")
-                        else:
-                            def _find_column(name: str) -> Optional[str]:
-                                lowered = name.lower()
-                                for column in fieldnames:
-                                    if column and column.strip().lower() == lowered:
-                                        return column
-                                return None
+                status_column = selected_columns.get("status") or STATUS_COLUMN
+                detail_column = selected_columns.get("detail") or DETAIL_COLUMN
+                path_column = selected_columns.get("path") or PATH_COLUMN
+                timestamp_column = selected_columns.get("timestamp") or TIMESTAMP_COLUMN
+                skip_column = selected_columns.get("skip")
 
-                            status_column = _find_column(STATUS_COLUMN) or STATUS_COLUMN
-                            detail_column = _find_column(DETAIL_COLUMN) or DETAIL_COLUMN
-                            path_column = _find_column(PATH_COLUMN) or PATH_COLUMN
-                            timestamp_column = _find_column(TIMESTAMP_COLUMN) or TIMESTAMP_COLUMN
+                base_fieldnames = list(fieldnames)
+                for column_name in (status_column, detail_column, path_column, timestamp_column):
+                    if column_name and column_name not in base_fieldnames:
+                        base_fieldnames.append(column_name)
+                if skip_column and skip_column not in base_fieldnames:
+                    base_fieldnames.append(skip_column)
 
-                            base_fieldnames = list(fieldnames)
-                            for column_name in (status_column, detail_column, path_column, timestamp_column):
-                                if column_name not in base_fieldnames:
-                                    base_fieldnames.append(column_name)
+                st.session_state["batch_all_results"] = []
+                st.session_state["batch_all_downloads"] = []
+                st.session_state["batch_summary_counts"] = {"success": 0, "failure": 0, "skipped": 0}
 
-                            skip_column = next(
-                                (col for col in fieldnames if col and col.strip().lower() == "skip"),
-                                None,
-                            )
+                context = {
+                    "rows": rows,
+                    "fieldnames": base_fieldnames,
+                    "url_column": url_column,
+                    "skip_column": skip_column,
+                    "status_column": status_column,
+                    "detail_column": detail_column,
+                    "path_column": path_column,
+                    "timestamp_column": timestamp_column,
+                    "filename_candidates": ("File Name", "Filename", "file_name", "Name"),
+                    "next_row": 0,
+                    "source_filename": csv_cache.get("source_name", getattr(csv_file, "name", "batch.csv") if csv_file else "batch.csv"),
+                    "cookies_bytes": batch_cookies_file.getvalue() if batch_cookies_file else None,
+                    "cookies_name": getattr(batch_cookies_file, "name", None),
+                }
 
-                            st.session_state["batch_all_results"] = []
-                            st.session_state["batch_all_downloads"] = []
-                            st.session_state["batch_summary_counts"] = {"success": 0, "failure": 0, "skipped": 0}
-
-                            context = {
-                                "rows": rows,
-                                "fieldnames": base_fieldnames,
-                                "url_column": url_column,
-                                "skip_column": skip_column,
-                                "status_column": status_column,
-                                "detail_column": detail_column,
-                                "path_column": path_column,
-                                "timestamp_column": timestamp_column,
-                                "filename_candidates": ("File Name", "Filename", "file_name", "Name"),
-                                "next_row": 0,
-                                "source_filename": getattr(csv_file, "name", "batch.csv"),
-                                "cookies_bytes": batch_cookies_file.getvalue() if batch_cookies_file else None,
-                                "cookies_name": getattr(batch_cookies_file, "name", None),
-                            }
-
-                            st.session_state["batch_context"] = context
-                            batch_results = _process_batch(context, int(pause_after or 0), bool(skip_completed))
-                            if batch_results is not None:
-                                batch_results = _update_batch_history(context, batch_results)
-                                st.session_state["batch_results"] = batch_results
-                                processing_triggered = True
-                                if batch_results.get("remaining_rows") == 0:
-                                    st.session_state.pop("batch_context", None)
+                st.session_state["batch_context"] = context
+                batch_results = _process_batch(context, int(pause_after or 0), bool(skip_completed))
+                if batch_results is not None:
+                    batch_results = _update_batch_history(context, batch_results)
+                    st.session_state["batch_results"] = batch_results
+                    processing_triggered = True
+                    if batch_results.get("remaining_rows") == 0:
+                        st.session_state.pop("batch_context", None)
 
 if st.session_state.pop("continue_requested", False):
     context = st.session_state.get("batch_context")
