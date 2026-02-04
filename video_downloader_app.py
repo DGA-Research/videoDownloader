@@ -766,12 +766,12 @@ with single_download_expander.form("download_form"):
         type=["txt", "json", "cookies"],
         help="Upload exported browser cookies to access private, age-gated, or logged-in content.",
     )
-<<<<<<< HEAD
-=======
-    if st.session_state.get("cookie_refresh_prompt"):
+ if st.session_state.get("cookie_refresh_prompt"):
         st.warning(
             "Recent downloads hit HTTP 403 errors. Upload fresh cookies before continuing.",
-            icon=":warning:",
+            icon="⚠️"
+        )
+    submitted = st.form_submit_button("Download", use_container_width=True)
         )
 >>>>>>> parent of c8b5ba9 (Download failed(Trouble Shoot))
     submitted = st.form_submit_button("Download", use_container_width=True)
@@ -1286,6 +1286,7 @@ if st.session_state.pop("continue_requested", False):
 
 if processing_triggered:
     st.rerun()
+
 
 
 
