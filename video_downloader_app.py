@@ -769,7 +769,7 @@ with single_download_expander.form("download_form"):
     if st.session_state.get("cookie_refresh_prompt"):
         st.warning(
             "Recent downloads hit HTTP 403 errors. Upload fresh cookies before continuing.",
-            icon="⚠️",
+            icon=":warning:",
         )
     submitted = st.form_submit_button("Download", use_container_width=True)
 
@@ -906,7 +906,7 @@ with batch_download_expander:
     if st.session_state.get("cookie_refresh_prompt"):
         st.warning(
             "Recent downloads hit HTTP 403 errors. Upload fresh cookies before continuing.",
-            icon="⚠️",
+            icon=":warning:",
         )
 
     csv_cache_key = "batch_csv_cache"
