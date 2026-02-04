@@ -766,6 +766,11 @@ with single_download_expander.form("download_form"):
         type=["txt", "json", "cookies"],
         help="Upload exported browser cookies to access private, age-gated, or logged-in content.",
     )
+    if st.session_state.get("cookie_refresh_prompt"):
+        st.warning(
+            "Recent downloads hit HTTP 403 errors. Upload fresh cookies before continuing.",
+            icon=":warning:",
+        )
     submitted = st.form_submit_button("Download", use_container_width=True)
 
 if submitted:
@@ -868,6 +873,8 @@ if submitted:
                         st.warning("Downloaded file could not be read for download.")
                 else:
                     st.error("Download failed. Check the logs for more details.")
+                    if "HTTP Error 403: Forbidden" in log_output and not st.session_state.get("cookie_refresh_prompt", False):
+                        st.session_state["cookie_refresh_prompt"] = True
 
                 if log_output:
                     st.text_area("Logs", log_output, height=240)

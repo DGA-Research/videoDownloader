@@ -315,6 +315,18 @@ def download_video(
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "http_headers": {
+            "User-Agent": _YOUTUBE_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-us,en;q=0.5",
+            "Sec-Fetch-Mode": "navigate",
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+                "player_skip": ["js", "configs", "webpage"],
+            }
+        },
     }
     if FFMPEG_AVAILABLE:
         ydl_opts["format"] = "bv*+ba/b"
